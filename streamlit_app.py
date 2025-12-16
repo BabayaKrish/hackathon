@@ -56,7 +56,7 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-def send_to_root_agent(user_input: str) -> Dict:
+def send_to_root_agent(user_input: str) -> dict:
     """Send query to Root Agent for intelligent routing"""
     logger.info(f"[streamlit] Sending to Root Agent: {user_input}")
     
@@ -91,8 +91,15 @@ def detect_intent(query: str) -> tuple:
     """
     query_lower = query.lower()
     
+    # Upgrade queries
+    if any(word in query_lower for word in ["upgrade", "upgrade to", "recommend"]):
+        return "/plan", {
+            "user_id": st.session_state.user_id,
+            "current_plan": st.session_state.current_plan.lower()
+        }
+    
     # Wire transfer queries
-    if any(word in query_lower for word in ["wire", "transfer"]):
+    elif any(word in query_lower for word in ["wire", "transfer"]):
         return "/report", {
             "user_id": st.session_state.user_id,
             "report_type": "wire_details",
@@ -117,13 +124,6 @@ def detect_intent(query: str) -> tuple:
     elif any(word in query_lower for word in ["plan", "gold", "silver", "bronze", "feature", "price", "cost"]):
         return "/plan-info", {
             "query": query
-        }
-    
-    # Upgrade queries
-    elif any(word in query_lower for word in ["upgrade", "upgrade to", "recommend"]):
-        return "/plan", {
-            "user_id": st.session_state.user_id,
-            "current_plan": st.session_state.current_plan.lower()
         }
     
     # Default: balance

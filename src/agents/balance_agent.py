@@ -3,7 +3,7 @@
 
 import logging
 from typing import Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 import asyncio
 
@@ -82,7 +82,7 @@ class BalanceAgent:
                     "user_id": user_id,
                     "balance": 0.0,
                     "currency": "USD",
-                    "last_update": datetime.utcnow().isoformat(),
+                    "last_update": datetime.now(timezone.utc).isoformat(),
                     "note": "No transactions found for user"
                 }
             
@@ -319,7 +319,7 @@ class BalanceAgent:
                 },
                 "execution_log": execution_log,
                 "total_execution_time_ms": elapsed_time,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
         
         except Exception as e:
@@ -346,7 +346,7 @@ class MockBalanceAgent(BalanceAgent):
                 "user_id": user_id,
                 "balance": 0.0,
                 "currency": "USD",
-                "last_update": datetime.utcnow().isoformat(),
+                "last_update": datetime.now(timezone.utc).isoformat(),
                 "note": "No transactions found for user"
             }
 
@@ -356,7 +356,7 @@ class MockBalanceAgent(BalanceAgent):
             "user_id": user_id,
             "balance": 1234.56,
             "currency": "USD",
-            "last_update": datetime.utcnow().isoformat()
+            "last_update": datetime.now(timezone.utc).isoformat()
         }
 
     def get_recent_transactions(self, user_id: str, limit: int = 50, days_back: int = 90) -> Dict[str, Any]:
@@ -364,7 +364,7 @@ class MockBalanceAgent(BalanceAgent):
             return {"status": "success", "user_id": user_id, "transactions": [], "summary": {}, "breakdown": {}}
 
         # provide a few mocked transactions for evaluation
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         transactions = [
             {
                 "transaction_id": f"tx-{i}",
@@ -406,14 +406,14 @@ class MockBalanceAgent(BalanceAgent):
         if user_id == "user_trend_dec":
             # decreasing trend
             trends = [
-                {"date": (datetime.utcnow() - timedelta(days=i)).date().isoformat(), "average": 1000.0 - i * 10, "minimum": 900.0 - i * 10, "maximum": 1100.0 - i * 10}
+                {"date": (datetime.now(timezone.utc) - timedelta(days=i)).date().isoformat(), "average": 1000.0 - i * 10, "minimum": 900.0 - i * 10, "maximum": 1100.0 - i * 10}
                 for i in range(5)
             ]
             overall_trend = "decreasing"
         else:
             # default increasing/stable trend
             trends = [
-                {"date": (datetime.utcnow() - timedelta(days=i)).date().isoformat(), "average": 1000.0 + i * 10, "minimum": 900.0 + i * 10, "maximum": 1100.0 + i * 10}
+                {"date": (datetime.now(timezone.utc) - timedelta(days=i)).date().isoformat(), "average": 1000.0 + i * 10, "minimum": 900.0 + i * 10, "maximum": 1100.0 + i * 10}
                 for i in range(5)
             ]
             overall_trend = "increasing"

@@ -26,8 +26,10 @@ def test_balance_endpoint():
     assert "status" in response_data
     assert response_data["status"] == "success"
     assert "balance" in response_data
-    assert "transaction_count" in response_data
+    assert "recent_transactions" in response_data
+    assert "summary" in response_data["recent_transactions"]
+    assert "transaction_count" in response_data["recent_transactions"]["summary"]
 
     # Assert the data types are correct
     assert isinstance(response_data["balance"], (int, float))
-    assert isinstance(response_data["transaction_count"], int)
+    assert isinstance(response_data["recent_transactions"]["summary"]["transaction_count"], int)

@@ -38,7 +38,7 @@ def test_detect_intent_wire_report():
     endpoint, body = detect_intent(query)
     assert endpoint == "/report"
     assert body == {
-        "user_id": "test_user",
+        "user_id": "silver_001",
         "report_type": "wire_details",
         "format_type": "json"
     }
