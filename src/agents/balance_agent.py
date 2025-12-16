@@ -5,10 +5,22 @@ import logging
 from typing import Dict, Any, List
 from datetime import datetime, timedelta
 import time
+import asyncio
 
-from google.cloud import bigquery
-import vertexai
-from vertexai.generative_models import GenerativeModel
+try:
+    from google.cloud import bigquery
+except Exception:
+    bigquery = None
+
+try:
+    import vertexai
+    from vertexai.generative_models import GenerativeModel
+except Exception:
+    vertexai = None
+
+    class GenerativeModel:
+        def __init__(self, *args, **kwargs):
+            pass
 
 # ==================== Configuration ====================
 
@@ -317,6 +329,130 @@ class BalanceAgent:
                 "error": str(e),
                 "execution_log": execution_log
             }
+
+
+# ==================== Eval / Testcases ====================
+class MockBalanceAgent(BalanceAgent):
+    """Lightweight mock agent that overrides external calls for local evals."""
+    def __init__(self):
+        # Do not initialize external clients
+        self.project_id = "mock_project"
+        self.region = "local"
+
+    def get_current_balance(self, user_id: str) -> Dict[str, Any]:
+        if user_id == "user_no_tx":
+            return {
+                "status": "success",
+                "user_id": user_id,
+                "balance": 0.0,
+                "currency": "USD",
+                "last_update": datetime.utcnow().isoformat(),
+                "note": "No transactions found for user"
+            }
+
+        # default mocked balance
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "balance": 1234.56,
+            "currency": "USD",
+            "last_update": datetime.utcnow().isoformat()
+        }
+
+    def get_recent_transactions(self, user_id: str, limit: int = 50, days_back: int = 90) -> Dict[str, Any]:
+        if user_id == "user_no_tx":
+            return {"status": "success", "user_id": user_id, "transactions": [], "summary": {}, "breakdown": {}}
+
+        # provide a few mocked transactions for evaluation
+        now = datetime.utcnow()
+        transactions = [
+            {
+                "transaction_id": f"tx-{i}",
+                "date": (now - timedelta(days=i)).isoformat(),
+                "type": "deposit" if i % 2 == 0 else "wire",
+                "amount": 100.0 * (i + 1),
+                "description": f"Mock transaction {i}",
+                "status": "completed",
+                "reference_id": f"ref-{i}",
+                "counterparty": "counterparty",
+                "running_balance": 1000.0 + 100.0 * i
+            }
+            for i in range(min(limit, 5))
+        ]
+
+        total_debits = sum(t["amount"] for t in transactions if t["type"] in ["wire", "ach", "check"])
+        total_credits = sum(t["amount"] for t in transactions if t["type"] in ["deposit", "transfer_in"])
+
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "transactions": transactions,
+            "summary": {
+                "transaction_count": len(transactions),
+                "total_debits": total_debits,
+                "total_credits": total_credits,
+                "net_activity": total_credits - total_debits,
+                "period_days": days_back
+            },
+            "breakdown": {
+                "wire_transfers": len([t for t in transactions if t["type"] == "wire"]),
+                "ach_transfers": 0,
+                "deposits": len([t for t in transactions if t["type"] == "deposit"]),
+                "checks": 0
+            }
+        }
+
+    def get_balance_trends(self, user_id: str, days_back: int = 30) -> Dict[str, Any]:
+        if user_id == "user_trend_dec":
+            # decreasing trend
+            trends = [
+                {"date": (datetime.utcnow() - timedelta(days=i)).date().isoformat(), "average": 1000.0 - i * 10, "minimum": 900.0 - i * 10, "maximum": 1100.0 - i * 10}
+                for i in range(5)
+            ]
+            overall_trend = "decreasing"
+        else:
+            # default increasing/stable trend
+            trends = [
+                {"date": (datetime.utcnow() - timedelta(days=i)).date().isoformat(), "average": 1000.0 + i * 10, "minimum": 900.0 + i * 10, "maximum": 1100.0 + i * 10}
+                for i in range(5)
+            ]
+            overall_trend = "increasing"
+
+        volatility = max([t["maximum"] - t["minimum"] for t in trends]) if trends else 0
+
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "trends": trends,
+            "analysis": {
+                "overall_trend": overall_trend,
+                "average_volatility": volatility,
+                "days_analyzed": len(trends),
+                "period_days": days_back
+            }
+        }
+
+
+async def run_eval_cases() -> None:
+    """Run a set of eval cases using the MockBalanceAgent and print concise summaries."""
+    agent = MockBalanceAgent()
+
+    test_users = ["user_no_tx", "user_normal", "user_trend_dec"]
+
+    for uid in test_users:
+        print(f"\n=== Eval for {uid} ===")
+        result = await agent.process_balance_request(uid)
+        print(f"status: {result.get('status')}")
+        print(f"current_balance: {result.get('current_balance')}")
+        print(f"recent_transactions_count: {result.get('summary', {}).get('recent_transactions_count')}")
+        print(f"trend_direction: {result.get('summary', {}).get('trend_direction')}")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run_eval_cases())
+    except Exception as e:
+        print(f"Eval run failed: {e}")
 
 # ==================== Exports ====================
 __all__ = ['BalanceAgent']

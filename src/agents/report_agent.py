@@ -8,9 +8,20 @@ from datetime import datetime
 import time
 from enum import Enum
 
-from google.cloud import bigquery
-import vertexai
-from vertexai.generative_models import GenerativeModel
+try:
+    from google.cloud import bigquery
+except Exception:
+    bigquery = None
+
+try:
+    import vertexai
+    from vertexai.generative_models import GenerativeModel
+except Exception:
+    vertexai = None
+
+    class GenerativeModel:
+        def __init__(self, *args, **kwargs):
+            pass
 
 # ==================== Configuration & Types ====================
 
@@ -547,3 +558,88 @@ class ReportAgent:
 # ==================== Exports ====================
 
 __all__ = ['ReportAgent', 'ReportType', 'ReportFormat']
+
+
+# ==================== Eval / Testcases ====================
+class MockReportAgent(ReportAgent):
+    """Mock ReportAgent for local evals without external services."""
+    def __init__(self):
+        # don't initialize BigQuery or Vertex clients
+        self.project_id = "mock_project"
+        self.region = "local"
+
+    def validate_access(self, user_id: str, report_type: str) -> Dict[str, Any]:
+        # simulate access rules; 'user_denied' has no access
+        if user_id == "user_denied":
+            return {"status": "success", "access_granted": False, "reason": "Plan restrictions"}
+
+        return {"status": "success", "access_granted": True, "plan_tier": "gold", "kyc_verified": True}
+
+    def query_bigquery(self, user_id: str, report_type: str) -> Dict[str, Any]:
+        # return mocked rows depending on report_type
+        now = datetime.utcnow().isoformat()
+        if report_type == "balance_report":
+            data = [
+                {
+                    "user_id": user_id,
+                    "account_id": "acc-1",
+                    "balance_date": now,
+                    "opening_balance": 1000.0,
+                    "closing_balance": 1200.0,
+                    "total_debits": 300.0,
+                    "total_credits": 500.0,
+                    "average_daily_balance": 1100.0
+                }
+            ]
+        elif report_type == "wire_details":
+            data = [
+                {
+                    "wire_id": "w-1",
+                    "user_id": user_id,
+                    "wire_amount": 2500.0,
+                    "destination_bank": "Mock Bank",
+                    "destination_account": "dest-acc",
+                    "status": "completed",
+                    "wire_date": now,
+                    "reference_number": "ref-123",
+                    "beneficiary_name": "Beneficiary"
+                }
+            ]
+        else:
+            data = [{"user_id": user_id, "note": f"mock data for {report_type}"}]
+
+        return {
+            "status": "success",
+            "report_type": report_type,
+            "row_count": len(data),
+            "data": data,
+            "query_timestamp": now
+        }
+
+
+async def run_eval_cases() -> None:
+    agent = MockReportAgent()
+
+    cases = [
+        ("user_ok", "balance_report", "json"),
+        ("user_ok", "wire_details", "csv"),
+        ("user_denied", "balance_report", "json")
+    ]
+
+    for user_id, rpt_type, fmt in cases:
+        print(f"\n--- Eval: user={user_id} report={rpt_type} format={fmt} ---")
+        result = await agent.process_report_request(user_id, rpt_type, fmt)
+        print(f"status: {result.get('status')}")
+        if result.get("status") == "success":
+            print(f"rows: {result.get('summary', {}).get('total_records')}")
+            print(f"file_name: {result.get('summary', {}).get('file_name')}")
+        else:
+            print(f"error: {result.get('error')}")
+
+
+if __name__ == "__main__":
+    import asyncio as _asyncio
+    try:
+        _asyncio.run(run_eval_cases())
+    except Exception as e:
+        print(f"Eval run failed: {e}")
