@@ -1,11 +1,17 @@
 # Balance Agent - Account Balance & Transactions
 # File: backend/agents/balance_agent.py
 
+import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, timezone
 import time
 import asyncio
+
+from google.cloud import bigquery
+from common_tools.AuditTool import async_log_event
+import vertexai
+from vertexai.generative_models import GenerativeModel
 
 try:
     from google.cloud import bigquery
@@ -52,11 +58,45 @@ class BalanceAgent:
         self.model = GenerativeModel("gemini-2.0-flash-exp")
         
         logger.info(f"BalanceAgent initialized for project {project_id}")
+
+    async def _audit_log(
+        self,
+        agent_name: str,
+        caller: str,
+        input_text: str,
+        output_text: str,
+        latency_ms: float,
+        safety_result: str = "allowed",
+        error_message: Optional[str] = None,
+        metadata: Optional[Dict] = None
+    ):
+        """
+        Log event to audit trail using AuditTool.
+        """
+        if async_log_event is None:
+            logger.debug("AuditTool not available, skipping audit logging")
+            return
+        
+        try:
+            result = await async_log_event(
+                agent_name=agent_name,
+                model_name="gemini-2.0-flash-exp",
+                caller=caller,
+                input_text=input_text,
+                output_text=output_text,
+                latency_ms=latency_ms,
+                safety_result=safety_result,
+                error_message=error_message,
+                metadata=metadata
+            )
+            logger.info(f"Audit logged: {result}")
+        except Exception as e:
+            logger.error(f"Failed to log audit event: {str(e)}")
     
-    def get_current_balance(self, user_id: str) -> Dict[str, Any]:
+    async def get_current_balance(self, user_id: str) -> Dict[str, Any]:
         """TOOL 1: Get current account balance"""
         logger.info(f"Retrieving current balance for user {user_id}")
-        
+        start_time = time.time()
         try:
             query = f"""
             SELECT
@@ -76,8 +116,9 @@ class BalanceAgent:
             
             results = list(self.bq_client.query(query, job_config=job_config).result())
             
+            latency_ms = (time.time() - start_time) * 1000
             if not results:
-                return {
+                output = {
                     "status": "success",
                     "user_id": user_id,
                     "balance": 0.0,
@@ -85,9 +126,11 @@ class BalanceAgent:
                     "last_update": datetime.now(timezone.utc).isoformat(),
                     "note": "No transactions found for user"
                 }
+                await self._audit_log("balance_agent.get_current_balance", user_id, f"user_id: {user_id}", json.dumps(output), latency_ms, metadata={"user_id": user_id})
+                return output
             
             data = results[0]
-            return {
+            output = {
                 "status": "success",
                 "user_id": user_id,
                 "balance": float(data['balance']) if data['balance'] else 0.0,
@@ -95,17 +138,31 @@ class BalanceAgent:
                 "last_update": data['last_update'].isoformat() if hasattr(data.last_update, 'isoformat') else str(data.last_update),
                 "transaction_count": len(results)
             }
+            await self._audit_log("balance_agent.get_current_balance", user_id, f"user_id: {user_id}", json.dumps(output), latency_ms, metadata={"user_id": user_id})
+            return output
         
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Balance retrieval error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e),
                 "user_id": user_id,
                 "balance": 0.0
             }
+            await self._audit_log(
+                "balance_agent.get_current_balance",
+                user_id,
+                f"user_id: {user_id}",
+                json.dumps(error_output),
+                latency_ms,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"user_id": user_id}
+            )
+            return error_output
     
-    def get_recent_transactions(
+    async def get_recent_transactions(
         self,
         user_id: str,
         limit: int = 50,
@@ -113,7 +170,13 @@ class BalanceAgent:
     ) -> Dict[str, Any]:
         """TOOL 2: Get recent transactions"""
         logger.info(f"Retrieving recent transactions for user {user_id}")
-        
+        start_time = time.time()
+        input_text = json.dumps({
+            "user_id": user_id,
+            "limit": limit,
+            "days_back": days_back
+        })
+
         try:
             # FIXED: Removed broken CTE syntax, simplified to direct query
             query = f"""
@@ -166,7 +229,7 @@ class BalanceAgent:
             total_debits = sum(t["amount"] for t in transactions if t["type"] in ["wire", "ach", "check"])
             total_credits = sum(t["amount"] for t in transactions if t["type"] in ["deposit", "transfer_in"])
             
-            return {
+            output = {
                 "status": "success",
                 "user_id": user_id,
                 "transactions": transactions,
@@ -184,18 +247,40 @@ class BalanceAgent:
                     "checks": len([t for t in transactions if t["type"] == "check"])
                 }
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log(
+                "balance_agent.get_recent_transactions",
+                user_id,
+                input_text,
+                json.dumps(output),
+                latency_ms,
+                metadata={"user_id": user_id}
+            )
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Transaction retrieval error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e),
                 "transactions": []
             }
+            await self._audit_log(
+                "balance_agent.get_recent_transactions",
+                user_id,
+                input_text,
+                json.dumps(error_output),
+                latency_ms,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"user_id": user_id}
+            )
+            return error_output
     
-    def get_balance_trends(self, user_id: str, days_back: int = 30) -> Dict[str, Any]:
+    async def get_balance_trends(self, user_id: str, days_back: int = 30) -> Dict[str, Any]:
         """Helper method to get balance trends over time"""
         logger.info(f"Analyzing balance trends for user {user_id}")
-        
+        start_time = time.time()
         try:
             # FIXED: Use transaction_date and running_balance from actual table
             query = f"""
@@ -237,7 +322,7 @@ class BalanceAgent:
                 overall_trend = "stable"
                 volatility = 0
             
-            return {
+            output = {
                 "status": "success",
                 "user_id": user_id,
                 "trends": trends,
@@ -248,13 +333,35 @@ class BalanceAgent:
                     "period_days": days_back
                 }
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log(
+                "balance_agent.get_balance_trends",
+                user_id,
+                json.dumps({"user_id": user_id, "days_back": days_back}),
+                json.dumps(output),
+                latency_ms,
+                metadata={"user_id": user_id}
+            )
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Trend analysis error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e),
                 "trends": []
             }
+            await self._audit_log(
+                "balance_agent.get_balance_trends",
+                user_id,
+                json.dumps({"user_id": user_id, "days_back": days_back}),
+                json.dumps(error_output),
+                latency_ms,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"user_id": user_id}
+            )
+            return error_output
     
     async def process_balance_request(self, user_id: str) -> Dict[str, Any]:
         """Main Balance Agent entry point"""
@@ -265,7 +372,7 @@ class BalanceAgent:
         
         try:
             # Step 1: Get current balance
-            balance_result = self.get_current_balance(user_id)
+            balance_result = await self.get_current_balance(user_id)
             execution_log.append({
                 "step": "get_current_balance",
                 "status": balance_result.get("status")
@@ -279,7 +386,7 @@ class BalanceAgent:
                 }
             
             # Step 2: Get recent transactions
-            transactions_result = self.get_recent_transactions(user_id, limit=50, days_back=90)
+            transactions_result = await self.get_recent_transactions(user_id, limit=50, days_back=90)
             execution_log.append({
                 "step": "get_recent_transactions",
                 "status": transactions_result.get("status"),
@@ -287,7 +394,7 @@ class BalanceAgent:
             })
             
             # Step 3: Get balance trends
-            trends_result = self.get_balance_trends(user_id, days_back=30)
+            trends_result = await self.get_balance_trends(user_id, days_back=30)
             execution_log.append({
                 "step": "get_balance_trends",
                 "status": trends_result.get("status"),
@@ -296,8 +403,9 @@ class BalanceAgent:
             
             elapsed_time = (time.time() - start_time) * 1000
             
+            input_text = f"user_id: {user_id}"
             # FIXED: Use correct balance_result structure (no nested "balance_info")
-            return {
+            output = {
                 "status": "success",
                 "user_id": user_id,
                 "current_balance": balance_result.get("balance", 0),
@@ -321,138 +429,35 @@ class BalanceAgent:
                 "total_execution_time_ms": elapsed_time,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
+            await self._audit_log(
+                "balance_agent.process_balance_request",
+                user_id,
+                input_text,
+                json.dumps(output),
+                elapsed_time,
+                metadata={"user_id": user_id}
+            )
+            return output
         
         except Exception as e:
+            elapsed_time = (time.time() - start_time) * 1000
             logger.error(f"Balance request processing error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e),
                 "execution_log": execution_log
             }
-
-
-# ==================== Eval / Testcases ====================
-class MockBalanceAgent(BalanceAgent):
-    """Lightweight mock agent that overrides external calls for local evals."""
-    def __init__(self):
-        # Do not initialize external clients
-        self.project_id = "mock_project"
-        self.region = "local"
-
-    def get_current_balance(self, user_id: str) -> Dict[str, Any]:
-        if user_id == "user_no_tx":
-            return {
-                "status": "success",
-                "user_id": user_id,
-                "balance": 0.0,
-                "currency": "USD",
-                "last_update": datetime.now(timezone.utc).isoformat(),
-                "note": "No transactions found for user"
-            }
-
-        # default mocked balance
-        return {
-            "status": "success",
-            "user_id": user_id,
-            "balance": 1234.56,
-            "currency": "USD",
-            "last_update": datetime.now(timezone.utc).isoformat()
-        }
-
-    def get_recent_transactions(self, user_id: str, limit: int = 50, days_back: int = 90) -> Dict[str, Any]:
-        if user_id == "user_no_tx":
-            return {"status": "success", "user_id": user_id, "transactions": [], "summary": {}, "breakdown": {}}
-
-        # provide a few mocked transactions for evaluation
-        now = datetime.now(timezone.utc)
-        transactions = [
-            {
-                "transaction_id": f"tx-{i}",
-                "date": (now - timedelta(days=i)).isoformat(),
-                "type": "deposit" if i % 2 == 0 else "wire",
-                "amount": 100.0 * (i + 1),
-                "description": f"Mock transaction {i}",
-                "status": "completed",
-                "reference_id": f"ref-{i}",
-                "counterparty": "counterparty",
-                "running_balance": 1000.0 + 100.0 * i
-            }
-            for i in range(min(limit, 5))
-        ]
-
-        total_debits = sum(t["amount"] for t in transactions if t["type"] in ["wire", "ach", "check"])
-        total_credits = sum(t["amount"] for t in transactions if t["type"] in ["deposit", "transfer_in"])
-
-        return {
-            "status": "success",
-            "user_id": user_id,
-            "transactions": transactions,
-            "summary": {
-                "transaction_count": len(transactions),
-                "total_debits": total_debits,
-                "total_credits": total_credits,
-                "net_activity": total_credits - total_debits,
-                "period_days": days_back
-            },
-            "breakdown": {
-                "wire_transfers": len([t for t in transactions if t["type"] == "wire"]),
-                "ach_transfers": 0,
-                "deposits": len([t for t in transactions if t["type"] == "deposit"]),
-                "checks": 0
-            }
-        }
-
-    def get_balance_trends(self, user_id: str, days_back: int = 30) -> Dict[str, Any]:
-        if user_id == "user_trend_dec":
-            # decreasing trend
-            trends = [
-                {"date": (datetime.now(timezone.utc) - timedelta(days=i)).date().isoformat(), "average": 1000.0 - i * 10, "minimum": 900.0 - i * 10, "maximum": 1100.0 - i * 10}
-                for i in range(5)
-            ]
-            overall_trend = "decreasing"
-        else:
-            # default increasing/stable trend
-            trends = [
-                {"date": (datetime.now(timezone.utc) - timedelta(days=i)).date().isoformat(), "average": 1000.0 + i * 10, "minimum": 900.0 + i * 10, "maximum": 1100.0 + i * 10}
-                for i in range(5)
-            ]
-            overall_trend = "increasing"
-
-        volatility = max([t["maximum"] - t["minimum"] for t in trends]) if trends else 0
-
-        return {
-            "status": "success",
-            "user_id": user_id,
-            "trends": trends,
-            "analysis": {
-                "overall_trend": overall_trend,
-                "average_volatility": volatility,
-                "days_analyzed": len(trends),
-                "period_days": days_back
-            }
-        }
-
-
-async def run_eval_cases() -> None:
-    """Run a set of eval cases using the MockBalanceAgent and print concise summaries."""
-    agent = MockBalanceAgent()
-
-    test_users = ["user_no_tx", "user_normal", "user_trend_dec"]
-
-    for uid in test_users:
-        print(f"\n=== Eval for {uid} ===")
-        result = await agent.process_balance_request(uid)
-        print(f"status: {result.get('status')}")
-        print(f"current_balance: {result.get('current_balance')}")
-        print(f"recent_transactions_count: {result.get('summary', {}).get('recent_transactions_count')}")
-        print(f"trend_direction: {result.get('summary', {}).get('trend_direction')}")
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(run_eval_cases())
-    except Exception as e:
-        print(f"Eval run failed: {e}")
+            await self._audit_log(
+                "balance_agent.process_balance_request",
+                user_id,
+                f"user_id: {user_id}",
+                json.dumps(error_output),
+                elapsed_time,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"user_id": user_id}
+            )
+            return error_output
 
 # ==================== Exports ====================
 __all__ = ['BalanceAgent']

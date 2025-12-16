@@ -853,7 +853,22 @@ async def process_query(request: ProcessQueryRequest):
         logger.error(f"[{correlation_id}] ========== ROOT AGENT PROCESSING FAILED ==========")
         raise HTTPException(status_code=500, detail=str(e))
     
+    
+@app.get("/clients-with-plans", tags=["Plan Agent"])
+async def clients_with_plans():
+    """
+    Get all clients and their current plans
 
+    Returns: List of clients with their plan tiers
+    """
+    if not plan_agent:
+        raise HTTPException(status_code=503, detail="Plan Agent unavailable")
+    try:
+        result = plan_agent.get_all_clients_with_plans()
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching clients with plans: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 # ==================== Main Entry Point ====================
 
 if __name__ == "__main__":

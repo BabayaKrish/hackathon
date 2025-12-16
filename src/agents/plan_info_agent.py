@@ -3,11 +3,12 @@
 
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 import time
 
 from google.cloud import bigquery
+from common_tools.AuditTool import async_log_event
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
@@ -171,8 +172,42 @@ class PlanInfoAgent:
         }
         
         logger.info(f"PlanInfoAgent initialized for project {project_id}")
+
+    async def _audit_log(
+        self,
+        agent_name: str,
+        caller: str,
+        input_text: str,
+        output_text: str,
+        latency_ms: float,
+        safety_result: str = "allowed",
+        error_message: Optional[str] = None,
+        metadata: Optional[Dict] = None
+    ):
+        """
+        Log event to audit trail using AuditTool.
+        """
+        if async_log_event is None:
+            logger.debug("AuditTool not available, skipping audit logging")
+            return
+        
+        try:
+            result = await async_log_event(
+                agent_name=agent_name,
+                model_name="gemini-2.0-flash-exp",
+                caller=caller,
+                input_text=input_text,
+                output_text=output_text,
+                latency_ms=latency_ms,
+                safety_result=safety_result,
+                error_message=error_message,
+                metadata=metadata
+            )
+            logger.info(f"Audit logged: {result}")
+        except Exception as e:
+            logger.error(f"Failed to log audit event: {str(e)}")
     
-    def retrieve_plan_features(self) -> Dict[str, Any]:
+    async def retrieve_plan_features(self) -> Dict[str, Any]:
         """
         TOOL 1: Retrieve detailed plan features
         
@@ -180,22 +215,39 @@ class PlanInfoAgent:
             Dictionary with all plan features
         """
         logger.info("Retrieving all plan features")
+        start_time = time.time()
+        input_text = "{}"
+        caller = "anonymous_user"
         
         try:
-            return {
+            output = {
                 "status": "success",
                 "plans": self.plans,
                 "total_plans": len(self.plans),
                 "timestamp": datetime.utcnow().isoformat()
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log("plan_info_agent.retrieve_plan_features", caller, input_text, json.dumps(output), latency_ms)
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Feature retrieval error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
+            await self._audit_log(
+                "plan_info_agent.retrieve_plan_features",
+                caller,
+                input_text,
+                json.dumps(error_output),
+                latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            return error_output
     
-    def get_pricing(self) -> Dict[str, Any]:
+    async def get_pricing(self) -> Dict[str, Any]:
         """
         TOOL 2: Get pricing information
         
@@ -203,7 +255,10 @@ class PlanInfoAgent:
             Dictionary with pricing details and discounts
         """
         logger.info("Retrieving pricing information")
-        
+        start_time = time.time()
+        input_text = "{}"
+        caller = "anonymous_user"
+
         try:
             pricing_data = {}
             for plan_name, plan_details in self.plans.items():
@@ -219,7 +274,7 @@ class PlanInfoAgent:
                     "currency": "USD"
                 }
             
-            return {
+            output = {
                 "status": "success",
                 "pricing": pricing_data,
                 "payment_methods": [
@@ -233,14 +288,28 @@ class PlanInfoAgent:
                 },
                 "timestamp": datetime.utcnow().isoformat()
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log("plan_info_agent.get_pricing", caller, input_text, json.dumps(output), latency_ms)
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Pricing retrieval error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
+            await self._audit_log(
+                "plan_info_agent.get_pricing",
+                caller,
+                input_text,
+                json.dumps(error_output),
+                latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            return error_output
     
-    def build_comparison(self) -> Dict[str, Any]:
+    async def build_comparison(self) -> Dict[str, Any]:
         """
         TOOL 3: Build side-by-side plan comparison
         
@@ -248,6 +317,9 @@ class PlanInfoAgent:
             Dictionary with comparison matrix
         """
         logger.info("Building plan comparison")
+        start_time = time.time()
+        input_text = "{}"
+        caller = "anonymous_user"
         
         try:
             # Define comparison dimensions
@@ -319,20 +391,34 @@ class PlanInfoAgent:
                 }
             }
             
-            return {
+            output = {
                 "status": "success",
                 "comparison": comparison_dimensions,
                 "recommendation": "Gold for enterprise needs, Silver for growing businesses, Bronze to get started",
                 "upgrade_path": "Bronze → Silver → Gold"
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log("plan_info_agent.build_comparison", caller, input_text, json.dumps(output), latency_ms)
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Comparison building error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
+            await self._audit_log(
+                "plan_info_agent.build_comparison",
+                caller,
+                input_text,
+                json.dumps(error_output),
+                latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            return error_output
     
-    def retrieve_faq(self, category: str = None) -> Dict[str, Any]:
+    async def retrieve_faq(self, category: str = None) -> Dict[str, Any]:
         """
         TOOL 4: Retrieve FAQ by category
         
@@ -343,28 +429,46 @@ class PlanInfoAgent:
             Dictionary with FAQs
         """
         logger.info(f"Retrieving FAQs for category: {category}")
-        
+        start_time = time.time()
+        input_text = json.dumps({"category": category})
+        caller = "anonymous_user"
+
         try:
             if category and category.lower() in self.faqs:
                 faqs = {category.lower(): self.faqs[category.lower()]}
             else:
                 faqs = self.faqs
             
-            return {
+            output = {
                 "status": "success",
                 "faqs": faqs,
                 "categories": list(self.faqs.keys()),
                 "total_questions": sum(len(v) for v in faqs.values()),
                 "timestamp": datetime.utcnow().isoformat()
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log("plan_info_agent.retrieve_faq", caller, input_text, json.dumps(output), latency_ms, metadata={"category": category})
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"FAQ retrieval error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
+            await self._audit_log(
+                "plan_info_agent.retrieve_faq",
+                caller,
+                input_text,
+                json.dumps(error_output),
+                latency_ms,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"category": category}
+            )
+            return error_output
     
-    def explain_entitlements(self, plan_tier: str) -> Dict[str, Any]:
+    async def explain_entitlements(self, plan_tier: str) -> Dict[str, Any]:
         """
         TOOL 5: Explain what features are included in a plan
         
@@ -375,15 +479,30 @@ class PlanInfoAgent:
             Dictionary with detailed entitlements
         """
         logger.info(f"Explaining entitlements for {plan_tier}")
+        start_time = time.time()
+        input_text = json.dumps({"plan_tier": plan_tier})
+        caller = "anonymous_user"
         
         try:
             plan = self.plans.get(plan_tier.lower())
             
             if not plan:
-                return {
+                error_output = {
                     "status": "error",
                     "error": f"Plan '{plan_tier}' not found"
                 }
+                latency_ms = (time.time() - start_time) * 1000
+                await self._audit_log(
+                    "plan_info_agent.explain_entitlements",
+                    caller,
+                    input_text,
+                    json.dumps(error_output),
+                    latency_ms,
+                    safety_result="error",
+                    error_message=f"Plan '{plan_tier}' not found",
+                    metadata={"plan_tier": plan_tier}
+                )
+                return error_output
             
             # Map features to capabilities
             entitlements = {
@@ -418,7 +537,7 @@ class PlanInfoAgent:
             
             tier_lower = plan_tier.lower()
             
-            return {
+            output = {
                 "status": "success",
                 "plan": plan_tier,
                 "entitlements": {
@@ -434,12 +553,27 @@ class PlanInfoAgent:
                 },
                 "plan_details": plan
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log("plan_info_agent.explain_entitlements", caller, input_text, json.dumps(output), latency_ms, metadata={"plan_tier": plan_tier})
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Entitlement explanation error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
+            await self._audit_log(
+                "plan_info_agent.explain_entitlements",
+                caller,
+                input_text,
+                json.dumps(error_output),
+                latency_ms,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"plan_tier": plan_tier}
+            )
+            return error_output
     
     async def process_info_request(self, query: str) -> Dict[str, Any]:
         """
@@ -455,34 +589,36 @@ class PlanInfoAgent:
         
         execution_log = []
         start_time = time.time()
+        input_text = json.dumps({"query": query})
+        caller = "anonymous_user"
         
         try:
             # Step 1: Analyze query to determine intent
             query_lower = query.lower()
             
             # Step 2: Retrieve relevant information based on intent
-            
+            data = None
             # Check for pricing questions
             if any(word in query_lower for word in ["price", "cost", "pricing", "how much", "expensive"]):
-                pricing_result = self.get_pricing()
+                pricing_result = await self.get_pricing()
                 execution_log.append({"step": "get_pricing", "status": "success"})
                 data = pricing_result
             
             # Check for comparison questions
             elif any(word in query_lower for word in ["compare", "difference", "vs", "versus", "better"]):
-                comparison_result = self.build_comparison()
+                comparison_result = await self.build_comparison()
                 execution_log.append({"step": "build_comparison", "status": "success"})
                 data = comparison_result
             
             # Check for feature questions
             elif any(word in query_lower for word in ["feature", "include", "included", "what's in", "contains", "reports"]):
-                features_result = self.retrieve_plan_features()
+                features_result = await self.retrieve_plan_features()
                 execution_log.append({"step": "retrieve_plan_features", "status": "success"})
                 data = features_result
             
             # Check for FAQ questions
             elif any(word in query_lower for word in ["faq", "frequently asked", "help", "question", "support"]):
-                faq_result = self.retrieve_faq()
+                faq_result = await self.retrieve_faq()
                 execution_log.append({"step": "retrieve_faq", "status": "success"})
                 data = faq_result
             
@@ -496,23 +632,24 @@ class PlanInfoAgent:
                         break
                 
                 if plan_mentioned:
-                    entitlements_result = self.explain_entitlements(plan_mentioned)
+                    entitlements_result = await self.explain_entitlements(plan_mentioned)
                     execution_log.append({"step": "explain_entitlements", "status": "success"})
+                    data = entitlements_result
                 else:
                     # Default to showing all plans
-                    features_result = self.retrieve_plan_features()
+                    features_result = await self.retrieve_plan_features()
                     execution_log.append({"step": "retrieve_plan_features", "status": "success"})
-                data = features_result
+                    data = features_result
             
             # Default: Get all plan features
             else:
-                features_result = self.retrieve_plan_features()
+                features_result = await self.retrieve_plan_features()
                 execution_log.append({"step": "retrieve_plan_features", "status": "success"})
                 data = features_result
             
             elapsed_time = (time.time() - start_time) * 1000
             
-            return {
+            output = {
                 "status": "success",
                 "query": query,
                 "data": data,
@@ -520,14 +657,28 @@ class PlanInfoAgent:
                 "total_execution_time_ms": elapsed_time,
                 "timestamp": datetime.utcnow().isoformat()
             }
+            await self._audit_log("plan_info_agent.process_info_request", caller, input_text, json.dumps(output), elapsed_time, metadata={"query": query})
+            return output
         
         except Exception as e:
+            elapsed_time = (time.time() - start_time) * 1000
             logger.error(f"Info request processing error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e),
                 "execution_log": execution_log
             }
+            await self._audit_log(
+                "plan_info_agent.process_info_request",
+                caller,
+                input_text,
+                json.dumps(error_output),
+                elapsed_time,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"query": query}
+            )
+            return error_output
 
 
 # ==================== Exports ====================
