@@ -3,11 +3,12 @@
 
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 import time
 
 from google.cloud import bigquery
+from common_tools.AuditTool import async_log_event
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
@@ -86,8 +87,42 @@ class PlanAgent:
         }
         
         logger.info(f"PlanAgent initialized for project {project_id}")
+
+    async def _audit_log(
+        self,
+        agent_name: str,
+        caller: str,
+        input_text: str,
+        output_text: str,
+        latency_ms: float,
+        safety_result: str = "allowed",
+        error_message: Optional[str] = None,
+        metadata: Optional[Dict] = None
+    ):
+        """
+        Log event to audit trail using AuditTool.
+        """
+        if async_log_event is None:
+            logger.debug("AuditTool not available, skipping audit logging")
+            return
+        
+        try:
+            result = await async_log_event(
+                agent_name=agent_name,
+                model_name="gemini-2.0-flash-exp",
+                caller=caller,
+                input_text=input_text,
+                output_text=output_text,
+                latency_ms=latency_ms,
+                safety_result=safety_result,
+                error_message=error_message,
+                metadata=metadata
+            )
+            logger.info(f"Audit logged: {result}")
+        except Exception as e:
+            logger.error(f"Failed to log audit event: {str(e)}")
     
-    def analyze_usage(self, user_id: str) -> Dict[str, Any]:
+    async def analyze_usage(self, user_id: str) -> Dict[str, Any]:
         """
         TOOL 1: Extract and analyze usage metrics
         
@@ -98,6 +133,7 @@ class PlanAgent:
             Dictionary with usage metrics and patterns
         """
         logger.info(f"Analyzing usage for user {user_id}")
+        start_time = time.time()
         
         try:
             # Query usage metrics from past 90 days
@@ -159,7 +195,7 @@ class PlanAgent:
                     "avg_transaction_amount": float(r.avg_transaction_amount) if r.avg_transaction_amount else 0
                 })
             
-            return {
+            output = {
                 "status": "success",
                 "user_id": user_id,
                 "current_plan": current_plan,
@@ -172,15 +208,37 @@ class PlanAgent:
                 },
                 "monthly_breakdown": usage_data
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log(
+                agent_name="plan_agent.analyze_usage",
+                caller=user_id,
+                input_text=f"user_id: {user_id}",
+                output_text=json.dumps(output),
+                latency_ms=latency_ms,
+                metadata={"user_id": user_id}
+            )
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Usage analysis error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e),
                 "usage_summary": {}
             }
+            await self._audit_log(
+                agent_name="plan_agent.analyze_usage",
+                caller=user_id,
+                input_text=f"user_id: {user_id}",
+                output_text=json.dumps(error_output),
+                latency_ms=latency_ms,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"user_id": user_id}
+            )
+            return error_output
     
-    def calculate_fit(self, usage_metrics: Dict[str, Any]) -> Dict[str, Any]:
+    async def calculate_fit(self, usage_metrics: Dict[str, Any]) -> Dict[str, Any]:
         """
         TOOL 2: Calculate plan fit scores
         
@@ -191,6 +249,7 @@ class PlanAgent:
             Dictionary with plan fit scores and recommendations
         """
         logger.info("Calculating plan fit scores")
+        start_time = time.time()
         
         try:
             avg_monthly = usage_metrics.get("usage_summary", {}).get("avg_monthly_transactions", 0)
@@ -228,20 +287,42 @@ class PlanAgent:
             # Find recommended plan
             recommended_plan = max(fit_scores.items(), key=lambda x: x[1]["fit_score"])[0]
             
-            return {
+            output = {
                 "status": "success",
                 "fit_analysis": fit_scores,
                 "recommended_plan": recommended_plan,
                 "analysis_timestamp": datetime.utcnow().isoformat()
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log(
+                agent_name="plan_agent.calculate_fit",
+                caller=usage_metrics.get("user_id", "unknown"),
+                input_text=json.dumps(usage_metrics),
+                output_text=json.dumps(output),
+                latency_ms=latency_ms,
+                metadata={"user_id": usage_metrics.get("user_id", "unknown")}
+            )
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Fit calculation error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
+            await self._audit_log(
+                agent_name="plan_agent.calculate_fit",
+                caller=usage_metrics.get("user_id", "unknown"),
+                input_text=json.dumps(usage_metrics),
+                output_text=json.dumps(error_output),
+                latency_ms=latency_ms,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"user_id": usage_metrics.get("user_id", "unknown")}
+            )
+            return error_output
     
-    def calculate_roi(
+    async def calculate_roi(
         self,
         current_plan: str,
         recommended_plan: str,
@@ -259,6 +340,7 @@ class PlanAgent:
             Dictionary with ROI analysis
         """
         logger.info(f"Calculating ROI: {current_plan} -> {recommended_plan}")
+        start_time = time.time()
         
         try:
             current_details = self.plan_tiers.get(current_plan, {})
@@ -281,7 +363,7 @@ class PlanAgent:
             # Calculate ROI
             roi_percentage = ((total_benefits - monthly_cost_increase) / monthly_cost_increase * 100) if monthly_cost_increase > 0 else 0
             
-            return {
+            output = {
                 "status": "success",
                 "current_plan": current_plan,
                 "recommended_plan": recommended_plan,
@@ -303,14 +385,35 @@ class PlanAgent:
                     "break_even_month": 2 if roi_percentage > 0 else None
                 }
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log(
+                agent_name="plan_agent.calculate_roi",
+                caller="system",
+                input_text=f"from:{current_plan},to:{recommended_plan}",
+                output_text=json.dumps(output),
+                latency_ms=latency_ms,
+                metadata={"from_plan": current_plan, "to_plan": recommended_plan}
+            )
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"ROI calculation error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
+            await self._audit_log(
+                agent_name="plan_agent.calculate_roi",
+                caller="system",
+                input_text=f"from:{current_plan},to:{recommended_plan}",
+                output_text=json.dumps(error_output),
+                latency_ms=latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            return error_output
     
-    def detect_upsell(
+    async def detect_upsell(
         self,
         current_plan: str,
         usage_metrics: Dict[str, Any],
@@ -328,6 +431,7 @@ class PlanAgent:
             Dictionary with upsell opportunities
         """
         logger.info(f"Detecting upsell opportunities for {current_plan}")
+        start_time = time.time()
         
         try:
             peak_utilization = usage_metrics.get("usage_summary", {}).get("peak_month_transactions", 0)
@@ -369,7 +473,7 @@ class PlanAgent:
                     "impact": "low"
                 })
             
-            return {
+            output = {
                 "status": "success",
                 "current_plan": current_plan,
                 "opportunities": opportunities,
@@ -377,14 +481,35 @@ class PlanAgent:
                 "total_opportunities": len(opportunities),
                 "recommendation": "immediate_upgrade" if urgency == "critical" else "consider_upgrade" if urgency == "high" else "monitor"
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log(
+                agent_name="plan_agent.detect_upsell",
+                caller=usage_metrics.get("user_id", "unknown"),
+                input_text=f"plan:{current_plan}",
+                output_text=json.dumps(output),
+                latency_ms=latency_ms,
+                metadata={"current_plan": current_plan, "user_id": usage_metrics.get("user_id", "unknown")}
+            )
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Upsell detection error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
+            await self._audit_log(
+                agent_name="plan_agent.detect_upsell",
+                caller=usage_metrics.get("user_id", "unknown"),
+                input_text=f"plan:{current_plan}",
+                output_text=json.dumps(error_output),
+                latency_ms=latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            return error_output
     
-    def execute_upgrade(
+    async def execute_upgrade(
         self,
         user_id: str,
         from_plan: str,
@@ -402,6 +527,7 @@ class PlanAgent:
             Dictionary with upgrade confirmation
         """
         logger.info(f"Executing upgrade: {from_plan} -> {to_plan} for user {user_id}")
+        start_time = time.time()
         
         try:
             # Update plan in database
@@ -439,7 +565,7 @@ class PlanAgent:
             
             new_plan_details = self.plan_tiers.get(to_plan, {})
             
-            return {
+            output = {
                 "status": "success",
                 "confirmation": {
                     "upgrade_id": f"upg_{user_id}_{datetime.utcnow().timestamp()}",
@@ -450,14 +576,35 @@ class PlanAgent:
                     "new_monthly_cost": new_plan_details.get("price", 0)
                 }
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log(
+                agent_name="plan_agent.execute_upgrade",
+                caller=user_id,
+                input_text=f"user:{user_id}, from:{from_plan}, to:{to_plan}",
+                output_text=json.dumps(output),
+                latency_ms=latency_ms,
+                metadata={"user_id": user_id, "from_plan": from_plan, "to_plan": to_plan}
+            )
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Upgrade execution error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
+            await self._audit_log(
+                agent_name="plan_agent.execute_upgrade",
+                caller=user_id,
+                input_text=f"user:{user_id}, from:{from_plan}, to:{to_plan}",
+                output_text=json.dumps(error_output),
+                latency_ms=latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            return error_output
     
-    def simulate_billing(
+    async def simulate_billing(
         self,
         plan_tier: str,
         months: int = 12
@@ -473,6 +620,7 @@ class PlanAgent:
             Dictionary with billing projection
         """
         logger.info(f"Simulating billing for {plan_tier} over {months} months")
+        start_time = time.time()
         
         try:
             plan_details = self.plan_tiers.get(plan_tier, {})
@@ -500,7 +648,7 @@ class PlanAgent:
             annual_cost = monthly_cost * 12
             annual_savings_with_commitment = (monthly_cost * 0.9) * 12 if months >= 12 else 0
             
-            return {
+            output = {
                 "status": "success",
                 "plan": plan_tier,
                 "projection": {
@@ -512,12 +660,33 @@ class PlanAgent:
                 },
                 "monthly_breakdown": monthly_breakdown
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log(
+                agent_name="plan_agent.simulate_billing",
+                caller="system",
+                input_text=f"plan:{plan_tier}, months:{months}",
+                output_text=json.dumps(output),
+                latency_ms=latency_ms,
+                metadata={"plan_tier": plan_tier}
+            )
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Billing simulation error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
+            await self._audit_log(
+                agent_name="plan_agent.simulate_billing",
+                caller="system",
+                input_text=f"plan:{plan_tier}, months:{months}",
+                output_text=json.dumps(error_output),
+                latency_ms=latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            return error_output
     
     async def process_plan_request(
         self,
@@ -541,7 +710,7 @@ class PlanAgent:
         
         try:
             # Step 1: Analyze usage
-            usage_result = self.analyze_usage(user_id)
+            usage_result = await self.analyze_usage(user_id)
             execution_log.append({
                 "step": "analyze_usage",
                 "status": usage_result.get("status")
@@ -549,7 +718,7 @@ class PlanAgent:
             usage_metrics = usage_result
             
             # Step 2: Calculate fit
-            fit_result = self.calculate_fit(usage_metrics)
+            fit_result = await self.calculate_fit(usage_metrics)
             execution_log.append({
                 "step": "calculate_fit",
                 "status": fit_result.get("status")
@@ -558,7 +727,7 @@ class PlanAgent:
             fit_scores = fit_result.get("fit_analysis", {})
             
             # Step 3: Calculate ROI
-            roi_result = self.calculate_roi(
+            roi_result = await self.calculate_roi(
                 current_plan,
                 recommended_plan,
                 usage_metrics.get("usage_summary", {}).get("avg_monthly_transactions", 0)
@@ -569,14 +738,14 @@ class PlanAgent:
             })
             
             # Step 4: Detect upsell
-            upsell_result = self.detect_upsell(current_plan, usage_metrics, fit_scores)
+            upsell_result = await self.detect_upsell(current_plan, usage_metrics, fit_scores)
             execution_log.append({
                 "step": "detect_upsell",
                 "status": upsell_result.get("status")
             })
             
             # Step 5: Simulate billing
-            billing_result = self.simulate_billing(recommended_plan)
+            billing_result = await self.simulate_billing(recommended_plan)
             execution_log.append({
                 "step": "simulate_billing",
                 "status": billing_result.get("status")
@@ -584,7 +753,7 @@ class PlanAgent:
             
             elapsed_time = (time.time() - start_time) * 1000
             
-            return {
+            output = {
                 "status": "success",
                 "user_id": user_id,
                 "current_plan": current_plan,
@@ -602,14 +771,34 @@ class PlanAgent:
                 "execution_log": execution_log,
                 "total_execution_time_ms": elapsed_time
             }
+            await self._audit_log(
+                agent_name="plan_agent.process_plan_request",
+                caller=user_id,
+                input_text=f"user:{user_id}, plan:{current_plan}",
+                output_text=json.dumps(output),
+                latency_ms=elapsed_time,
+                metadata={"user_id": user_id, "current_plan": current_plan}
+            )
+            return output
         
         except Exception as e:
+            elapsed_time = (time.time() - start_time) * 1000
             logger.error(f"Plan request processing error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e),
                 "execution_log": execution_log
             }
+            await self._audit_log(
+                agent_name="plan_agent.process_plan_request",
+                caller=user_id,
+                input_text=f"user:{user_id}, plan:{current_plan}",
+                output_text=json.dumps(error_output),
+                latency_ms=elapsed_time,
+                safety_result="error",
+                error_message=str(e)
+            )
+            return error_output
 
 
     def get_all_clients_with_plans(self) -> Dict[str, Any]:

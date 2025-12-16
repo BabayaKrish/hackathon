@@ -98,7 +98,7 @@ class MetricsCollector:
     def record_execution(self, log_entry: Dict[str, Any]):
         """Write execution log to BigQuery"""
         try:
-            table_id = f"{self.project_id}.client_data.agent_audit_log"
+            table_id = f"{self.project_id}.client_data.agent_audit_logs"
             
             # Only include basic fields that are likely to exist in the audit log table
             basic_log_entry = {
@@ -388,7 +388,7 @@ class RootAgent:
         })
     
     @adk_tool
-    def check_compliance(self, user_id: str, intent: str) -> str:
+    async def check_compliance(self, user_id: str, intent: str) -> str:
         """
         TOOL 2: Validate user compliance based on plan tier and KYC status.
         
@@ -440,7 +440,7 @@ class RootAgent:
                     "reason": "User not found"
                 })
                 latency_ms = int((time.time() - start_time) * 1000)
-                self._audit_log(
+                await self._audit_log(
                     agent_name="check_compliance",
                     caller=user_id,
                     input_text=f"intent:{intent}",
@@ -558,7 +558,7 @@ class RootAgent:
             return error_output
     
     @adk_tool
-    def route_to_agent(self, intent: str, user_id: str) -> str:
+    async def route_to_agent(self, intent: str, user_id: str) -> str:
         """
         TOOL 3: Route request to specialized sub-agent.
         
@@ -602,7 +602,7 @@ class RootAgent:
         })
         
         latency_ms = int((time.time() - start_time) * 1000)
-        self._audit_log(
+        await self._audit_log(
             agent_name="route_to_agent",
             caller=user_id,
             input_text=f"intent:{intent}",
@@ -615,7 +615,7 @@ class RootAgent:
         return output
     
     @adk_tool
-    def execute_sub_agent(
+    async def execute_sub_agent(
         self,
         target_agent: str,
         user_id: str,
@@ -666,7 +666,7 @@ class RootAgent:
             })
             
             # Audit the sub-agent execution
-            self._audit_log(
+            await self._audit_log(
                 agent_name=target_agent,
                 caller=user_id,
                 input_text=query,
@@ -700,7 +700,7 @@ class RootAgent:
             return error_output
     
     @adk_tool
-    def aggregate_results(
+    async def aggregate_results(
         self,
         sub_agent_data: str,
         intent: str,
@@ -755,7 +755,7 @@ class RootAgent:
             
             # Audit the aggregation
             latency_ms = int((time.time() - start_time) * 1000)
-            self._audit_log(
+            await self._audit_log(
                 agent_name="aggregate_results",
                 caller="system",
                 input_text=f"intent:{intent},confidence:{confidence}",
@@ -774,7 +774,7 @@ class RootAgent:
             })
             
             latency_ms = int((time.time() - start_time) * 1000)
-            self._audit_log(
+            await self._audit_log(
                 agent_name="aggregate_results",
                 caller="system",
                 input_text=f"intent:{intent}",
@@ -946,7 +946,7 @@ class RootAgent:
             
             # Step 2: Check Compliance
             step_start = time.time()
-            compliance_result_str = self.check_compliance(user_id, intent)
+            compliance_result_str = await self.check_compliance(user_id, intent)
             compliance_result = json.loads(compliance_result_str)
             compliance_status = compliance_result.get("compliance_status", "DENIED")
             execution_log.append({
@@ -987,7 +987,7 @@ class RootAgent:
             
             # Step 3: Route to Agent
             step_start = time.time()
-            routing_result_str = self.route_to_agent(intent, user_id)
+            routing_result_str = await self.route_to_agent(intent, user_id)
             routing_result = json.loads(routing_result_str)
             target_agent = routing_result.get("target_agent", "general_agent")
             execution_log.append({
@@ -1001,7 +1001,7 @@ class RootAgent:
             
             # Step 4: Execute Sub-Agent
             step_start = time.time()
-            exec_result_str = self.execute_sub_agent(target_agent, user_id, query, intent)
+            exec_result_str = await self.execute_sub_agent(target_agent, user_id, query, intent)
             exec_result = json.loads(exec_result_str)
             sub_agent_data = exec_result.get("data", {})
             execution_log.append({
@@ -1015,7 +1015,7 @@ class RootAgent:
             
             # Step 5: Aggregate Results
             step_start = time.time()
-            agg_result_str = self.aggregate_results(
+            agg_result_str = await self.aggregate_results(
                 json.dumps(sub_agent_data),
                 intent,
                 confidence
@@ -1056,7 +1056,7 @@ class RootAgent:
             
             # Audit the final successful response
             total_latency_ms = int((time.time() - overall_start_time) * 1000)
-            self._audit_log(
+            await self._audit_log(
                 agent_name="process_query",
                 caller=user_id,
                 input_text=query,
@@ -1098,7 +1098,7 @@ class RootAgent:
             
             # Audit the error response
             total_latency_ms = int((time.time() - overall_start_time) * 1000)
-            self._audit_log(
+            await self._audit_log(
                 agent_name="process_query",
                 caller=user_id,
                 input_text=query,
