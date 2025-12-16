@@ -14,6 +14,7 @@ import concurrent.futures
 import asyncio
 import sys
 import os
+from agents.plan_info_agent import PlanInfoAgent
 
 # Add parent directory to path for imports
 # sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'common_tools'))
@@ -145,19 +146,15 @@ class RootAgent:
     4. Aggregates and returns results
     """
     
-    def __init__(self, project_id: str, region: str = "us-central1"):
+    def __init__(self, project_id: str, region: str = "us-central1", plan_info_agent=None):
         """Initialize Root Agent with Google ADK"""
         self.project_id = project_id
         self.region = region
         self.bq_client = bigquery.Client(project=project_id)
-        #self.metrics = MetricsCollector(project_id)
-        
-        # Initialize Vertex AI
         vertexai.init(project=project_id, location=region)
         self.model = GenerativeModel("gemini-2.0-flash-exp")
-        
+        self.plan_info_agent = plan_info_agent  # <-- add this line
         logger.info(f"RootAgent initialized for project {project_id}")
-    
     # ==================== Audit Logging Helper ====================
     
     async def _audit_log(
@@ -650,7 +647,7 @@ class RootAgent:
             elif target_agent == "plan_agent":
                 data = self._execute_plan_agent(user_id, query)
             elif target_agent == "plan_info_agent":
-                data = self._execute_plan_info_agent(query)
+                data = await self._execute_plan_info_agent(query)
             elif target_agent == "balance_agent":
                 data = self._execute_balance_agent(user_id)
             else:
@@ -839,36 +836,41 @@ class RootAgent:
             "message": "Plan upgrade initiated. Awaiting payment confirmation.",
             "next_step": "payment_modal"
         }
-    
-    def _execute_plan_info_agent(self, query: str) -> Dict[str, Any]:
-        """Execute plan info agent: return plan details"""
-        bq_query = f"""
-        SELECT 
-            plan_name,
-            tier,
-            monthly_price,
-            annual_price,
-            features
-        FROM `{self.project_id}.client_data.plan_offerings`
-        ORDER BY monthly_price DESC
-        """
+    async def _execute_plan_info_agent(self, query: str) -> Dict[str, Any]:
+        if self.plan_info_agent is None:
+            logger.error("PlanInfoAgent not initialized")
+            return {"error": "PlanInfoAgent not available"}
+        # Await the coroutine directly
+        return await self.plan_info_agent.process_info_request(query)
+    # def _execute_plan_info_agent(self, query: str) -> Dict[str, Any]:
+    #     """Execute plan info agent: return plan details"""
+    #     bq_query = f"""
+    #     SELECT 
+    #         plan_name,
+    #         tier,
+    #         monthly_price,
+    #         annual_price,
+    #         features
+    #     FROM `{self.project_id}.client_data.plan_offerings`
+    #     ORDER BY monthly_price DESC
+    #     """
         
-        try:
-            results = self.bq_client.query(bq_query).result()
-            plans = []
-            for row in results:
-                plan_dict = dict(row)
-                # Convert Decimal objects to floats for JSON serialization
-                if 'monthly_price' in plan_dict and hasattr(plan_dict['monthly_price'], '__float__'):
-                    plan_dict['monthly_price'] = float(plan_dict['monthly_price'])
-                if 'annual_price' in plan_dict and hasattr(plan_dict['annual_price'], '__float__'):
-                    plan_dict['annual_price'] = float(plan_dict['annual_price'])
-                plans.append(plan_dict)
+    #     try:
+    #         results = self.bq_client.query(bq_query).result()
+    #         plans = []
+    #         for row in results:
+    #             plan_dict = dict(row)
+    #             # Convert Decimal objects to floats for JSON serialization
+    #             if 'monthly_price' in plan_dict and hasattr(plan_dict['monthly_price'], '__float__'):
+    #                 plan_dict['monthly_price'] = float(plan_dict['monthly_price'])
+    #             if 'annual_price' in plan_dict and hasattr(plan_dict['annual_price'], '__float__'):
+    #                 plan_dict['annual_price'] = float(plan_dict['annual_price'])
+    #             plans.append(plan_dict)
             
-            return {"plans": plans, "message": "All available plans retrieved"}
-        except Exception as e:
-            logger.error(f"Plan info agent error: {str(e)}")
-            return {"error": str(e), "plans": []}
+    #         return {"plans": plans, "message": "All available plans retrieved"}
+    #     except Exception as e:
+    #         logger.error(f"Plan info agent error: {str(e)}")
+    #         return {"error": str(e), "plans": []}
     
     def _execute_balance_agent(self, user_id: str) -> Dict[str, Any]:
         """Execute balance agent: fetch account balance and transactions"""
@@ -1140,46 +1142,22 @@ def create_app():
  # ==================== FACTORY FUNCTION ====================
 
 def create_root_agent(project_id: str, region: str = "us-central1") -> RootAgent:
-    """
-    Factory function to create and initialize a Root Agent instance.
-    
-    This function handles initialization of all dependencies:
-    - Google Cloud credentials
-    - Vertex AI connection  
-    - BigQuery client
-    - Metrics collector
-    
-    Args:
-        project_id (str): GCP project ID (e.g., "ccibt-hack25ww7-743")
-        region (str): GCP region (default: "us-central1")
-    
-    Returns:
-        RootAgent: Fully initialized Root Agent instance
-    
-    Raises:
-        ValueError: If project_id is invalid
-        Exception: If initialization fails
-    
-    Example:
-        >>> agent = create_root_agent("my-project-id", "us-central1")
-        >>> result = await agent.process_query("user_001", "What is my balance?")
-    """
     if not project_id or not isinstance(project_id, str):
         raise ValueError("project_id must be a non-empty string")
     
     logger.info(f"Creating Root Agent for project: {project_id}")
     
     try:
-        # Create RootAgent instance (which initializes all services)
-        agent = RootAgent(project_id=project_id, region=region)
+        # Create PlanInfoAgent instance
+        plan_info_agent = PlanInfoAgent(project_id=project_id, region=region)
+        # Pass it to RootAgent
+        agent = RootAgent(project_id=project_id, region=region, plan_info_agent=plan_info_agent)
         logger.info(f"✅ Root Agent created successfully")
         return agent
     
     except Exception as e:
         logger.error(f"Failed to create Root Agent: {str(e)}", exc_info=True)
         raise
-
-
 # ==================== EXPORTS ====================
 
 __all__ = [

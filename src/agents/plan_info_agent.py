@@ -578,50 +578,61 @@ class PlanInfoAgent:
     async def process_info_request(self, query: str) -> Dict[str, Any]:
         """
         Main Plan Info Agent entry point
-        
+
         Args:
             query: User question about plans
-        
+
         Returns:
             Comprehensive answer with relevant plan information
         """
         logger.info(f"Processing plan info request: {query}")
-        
+
         execution_log = []
         start_time = time.time()
         input_text = json.dumps({"query": query})
         caller = "anonymous_user"
-        
+
         try:
             # Step 1: Analyze query to determine intent
             query_lower = query.lower()
-            
+
             # Step 2: Retrieve relevant information based on intent
             data = None
+
             # Check for pricing questions
             if any(word in query_lower for word in ["price", "cost", "pricing", "how much", "expensive"]):
                 pricing_result = await self.get_pricing()
                 execution_log.append({"step": "get_pricing", "status": "success"})
                 data = pricing_result
-            
+
             # Check for comparison questions
             elif any(word in query_lower for word in ["compare", "difference", "vs", "versus", "better"]):
                 comparison_result = await self.build_comparison()
                 execution_log.append({"step": "build_comparison", "status": "success"})
                 data = comparison_result
-            
-            # Check for feature questions
+
+            # Check for feature questions (RAG: retrieve from compliance_rules)
             elif any(word in query_lower for word in ["feature", "include", "included", "what's in", "contains", "reports"]):
-                features_result = await self.retrieve_plan_features()
-                execution_log.append({"step": "retrieve_plan_features", "status": "success"})
+                # Try to extract plan tier from the query, default to 'bronze'
+                plan_mentioned = None
+                for plan in ["bronze", "silver", "gold"]:
+                    if plan in query_lower:
+                        plan_mentioned = plan
+                        break
+                if not plan_mentioned:
+                    plan_mentioned = "bronze"  # or handle as error/default
+
+                # RAG: Retrieve features from compliance_rules
+                features_result = await self.retrieve_compliant_features(plan_mentioned)
+                execution_log.append({"step": "retrieve_compliant_features", "status": "success"})
                 data = features_result
-            
+
             # Check for FAQ questions
             elif any(word in query_lower for word in ["faq", "frequently asked", "help", "question", "support"]):
                 faq_result = await self.retrieve_faq()
                 execution_log.append({"step": "retrieve_faq", "status": "success"})
                 data = faq_result
-            
+
             # Check for entitlement questions
             elif any(word in query_lower for word in ["can i", "am i", "entitle", "access", "allowed"]):
                 # Extract plan name if mentioned
@@ -630,7 +641,7 @@ class PlanInfoAgent:
                     if plan in query_lower:
                         plan_mentioned = plan
                         break
-                
+
                 if plan_mentioned:
                     entitlements_result = await self.explain_entitlements(plan_mentioned)
                     execution_log.append({"step": "explain_entitlements", "status": "success"})
@@ -640,15 +651,15 @@ class PlanInfoAgent:
                     features_result = await self.retrieve_plan_features()
                     execution_log.append({"step": "retrieve_plan_features", "status": "success"})
                     data = features_result
-            
+
             # Default: Get all plan features
             else:
                 features_result = await self.retrieve_plan_features()
                 execution_log.append({"step": "retrieve_plan_features", "status": "success"})
                 data = features_result
-            
+
             elapsed_time = (time.time() - start_time) * 1000
-            
+
             output = {
                 "status": "success",
                 "query": query,
@@ -659,7 +670,7 @@ class PlanInfoAgent:
             }
             await self._audit_log("plan_info_agent.process_info_request", caller, input_text, json.dumps(output), elapsed_time, metadata={"query": query})
             return output
-        
+
         except Exception as e:
             elapsed_time = (time.time() - start_time) * 1000
             logger.error(f"Info request processing error: {str(e)}")
@@ -680,6 +691,69 @@ class PlanInfoAgent:
             )
             return error_output
 
+    async def retrieve_compliant_features(self, plan_tier: str) -> Dict[str, Any]:
+        """
+        Retrieve features for a plan tier based on compliance_rules table.
+        Only returns features where is_allowed is TRUE or Optional.
+        """
+        logger.info(f"Retrieving compliant features for {plan_tier}")
+        start_time = time.time()
+        input_text = json.dumps({"plan_tier": plan_tier})
+        caller = "anonymous_user"
+
+        try:
+            query = f"""
+                SELECT feature, is_allowed
+                FROM `{self.project_id}.client_data.compliance_rules`
+                WHERE LOWER(tier) = '{plan_tier.lower()}'
+                AND (UPPER(is_allowed) = 'TRUE' OR UPPER(is_allowed) = 'OPTIONAL')
+            """
+            results = self.bq_client.query(query).result()
+            features = []
+            for row in results:
+                features.append({
+                    "feature": row.feature,
+                    "is_allowed": row.is_allowed
+                })
+
+            output = {
+                "status": "success",
+                "plan_tier": plan_tier,
+                "features": features,
+                "total_features": len(features),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            latency_ms = (time.time() - start_time) * 1000
+            # ...existing code...
+            await self._audit_log(
+                "plan_info_agent.retrieve_compliant_features",
+                caller,
+                input_text,
+                json.dumps(output),
+                int(latency_ms),  # Ensure integer type
+                metadata={"plan_tier": plan_tier}
+            )
+# ...existing code...
+            # await self._audit_log("plan_info_agent.retrieve_compliant_features", caller, input_text, json.dumps(output), latency_ms, metadata={"plan_tier": plan_tier})
+            return output
+        except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
+            logger.error(f"Compliant feature retrieval error: {str(e)}")
+            error_output = {
+                "status": "error",
+                "error": str(e)
+            }
+            await self._audit_log(
+                "plan_info_agent.retrieve_compliant_features",
+                caller,
+                input_text,
+                json.dumps(error_output),
+                latency_ms,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"plan_tier": plan_tier}
+            )
+            return error_output
 
 # ==================== Exports ====================
 
