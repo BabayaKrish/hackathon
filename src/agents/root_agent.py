@@ -10,6 +10,7 @@ from datetime import datetime
 from enum import Enum
 import time
 from functools import wraps
+import concurrent.futures
 import asyncio
 import sys
 import os
@@ -98,11 +99,21 @@ class MetricsCollector:
         """Write execution log to BigQuery"""
         try:
             table_id = f"{self.project_id}.client_data.agent_audit_log"
-            log_entry['created_at'] = datetime.utcnow().isoformat()
-            log_entry['log_id'] = f"log_{int(datetime.utcnow().timestamp())}"
+            
+            # Only include basic fields that are likely to exist in the audit log table
+            basic_log_entry = {
+                'created_at': datetime.utcnow().isoformat(),
+                'log_id': f"log_{int(datetime.utcnow().timestamp())}",
+                'user_id': log_entry.get('user_id', 'unknown'),
+                'intent': log_entry.get('intent', 'unknown'),
+                'agent_name': log_entry.get('agent_name', 'unknown'),
+                'status': log_entry.get('status', False),
+                'error_message': log_entry.get('error_message', ''),
+                'execution_time_ms': log_entry.get('execution_time_ms', 'test')
+            }
             
             errors = self.bq_client.insert_rows_json(
-                table_id, [log_entry], skip_invalid_rows=True
+                table_id, [basic_log_entry], skip_invalid_rows=True
             )
             if errors:
                 logger.error(f"Failed to insert audit log: {errors}")
@@ -139,7 +150,7 @@ class RootAgent:
         self.project_id = project_id
         self.region = region
         self.bq_client = bigquery.Client(project=project_id)
-        self.metrics = MetricsCollector(project_id)
+        #self.metrics = MetricsCollector(project_id)
         
         # Initialize Vertex AI
         vertexai.init(project=project_id, location=region)
@@ -201,136 +212,180 @@ class RootAgent:
         TOOL 1: Classify user intent using Vertex AI LLM.
         
         Args:
-            query: Natural language user query
-        
-        Returns:
-            JSON string with intent, confidence, and reasoning
+            query (str): Natural language user query
             
-        Intents:
-            - REPORT_REQUEST: User wants to view reports
-            - PLAN_UPGRADE: User wants to change plan
-            - PLAN_INFO: User asks for plan information
-            - BALANCE_CHECK: User wants account balance
-        
-        Example:
-            Input: "Show me my wire status report"
-            Output: {"intent": "REPORT_REQUEST", "confidence": 0.95, "reasoning": "..."}
+        Returns:
+            str: JSON string with intent, confidence, and reasoning
         """
+        
         logger.info(f"Classifying intent for query: {query}")
         
         start_time = time.time()
         
-        prompt = f"""
-You are a financial services intent classifier. Analyze the following customer query and determine their intent.
+        # Define valid intents to match our enum
+        valid_intents = ["REPORT_REQUEST", "PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK"]
+        
+        prompt = f"""You are a financial services intent classifier. Analyze the following customer query and determine their intent.
 
-Query: "{query}"
+    Query: {query}
 
-Available intents:
-1. REPORT_REQUEST - User wants to view or download a report (wire reports, balance reports, transaction history)
-2. PLAN_UPGRADE - User wants to change or upgrade their plan to a higher tier
-3. PLAN_INFO - User is asking for information about plans, features, pricing, or comparisons
-4. BALANCE_CHECK - User wants to know their current account balance or recent transactions
+    Available intents:
+    1. REPORT_REQUEST - User wants to view or download a report (wire reports, balance reports, transaction history)
+    2. PLAN_UPGRADE - User wants to change or upgrade their plan to a higher tier
+    3. PLAN_INFO - User is asking for information about plans, features, pricing, or comparisons
+    4. BALANCE_CHECK - User wants to know their current account balance or recent transactions
 
-Respond ONLY in valid JSON format with no additional text:
-{{
-    "intent": "REPORT_REQUEST|PLAN_UPGRADE|PLAN_INFO|BALANCE_CHECK",
-    "confidence": 0.0-1.0,
-    "reasoning": "Brief explanation of classification"
-}}
+    Respond ONLY in valid JSON format with no additional text:
+    {{"intent": "REPORT_REQUEST|PLAN_UPGRADE|PLAN_INFO|BALANCE_CHECK", "confidence": 0.0-1.0, "reasoning": "Brief explanation"}}
 
-Rules:
-- Confidence must be between 0 and 1
-- If unclear or ambiguous, set confidence < 0.8
-- Return valid JSON only, no markdown or explanations
-"""
-        response_text = ""  # ← DEFINE BEFORE TRY BLOCK
-
-        try:
-            logger.info(f"Sending prompt to Vertex AI (length: {len(prompt)} chars)")
-            response = self.model.generate_content(prompt)
-
-            if not response.text or not response.text.strip():
-                logger.warning(f"Empty response from LLM for query: {query}")
-                error_output = json.dumps({
+    Rules:
+    - Confidence must be between 0 and 1
+    - If unclear or ambiguous, set confidence to 0.6-0.8
+    - Return valid JSON only, no markdown or explanations"""
+        
+        max_retries = 3
+        base_delay = 1.0  # seconds
+        
+        # Add a small delay to help with rate limiting
+        time.sleep(0.5)
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Sending prompt to Vertex AI (attempt {attempt + 1}/{max_retries}, length: {len(prompt)} chars)")
+                
+                # Add timeout to prevent hanging
+                def call_vertex_ai():
+                    return self.model.generate_content(prompt)
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(call_vertex_ai)
+                    try:
+                        response = future.result(timeout=30.0)  # 30 second timeout
+                    except concurrent.futures.TimeoutError:
+                        logger.warning(f"Vertex AI call timed out on attempt {attempt + 1}")
+                        if attempt < max_retries - 1:
+                            time.sleep(base_delay * (2 ** attempt))  # Exponential backoff
+                            continue
+                        else:
+                            return json.dumps({
+                                "status": "error",
+                                "intent": "UNKNOWN",
+                                "confidence": 0.0,
+                                "error": "Vertex AI timeout after all retries"
+                            })
+                
+                # CHECK IF EMPTY FIRST
+                if not response.text or not response.text.strip():
+                    logger.warning(f"Empty response from LLM for query: {query}")
+                    if attempt < max_retries - 1:
+                        time.sleep(base_delay * (2 ** attempt))
+                        continue
+                    return json.dumps({
+                        "status": "error",
+                        "intent": "UNKNOWN",
+                        "confidence": 0.0,
+                        "error": "Empty LLM response after all retries"
+                    })
+                
+                logger.info(f"Response text length: {len(response.text)}")
+                logger.info(f"Response text: {response.text[:500]}")
+                
+                # ASSIGN TO response_text
+                response_text = response.text.strip()
+                
+                # STRIP MARKDOWN IF PRESENT
+                if response_text.startswith("```"):
+                    logger.info("Response has markdown fences, removing them")
+                    response_text = response_text.lstrip("`").lstrip("json").lstrip()
+                    response_text = response_text.rstrip("`").strip()
+                    logger.info(f"After fence removal: {response_text[:200]}")
+                
+                # PARSE CLEANED TEXT
+                result = json.loads(response_text)
+                intent_value = result.get("intent", "UNKNOWN")
+                confidence = float(result.get("confidence", 0.0))
+                reasoning = result.get("reasoning", "")
+                
+                # Validate intent is in our allowed list
+                if intent_value not in valid_intents:
+                    logger.warning(f"Invalid intent returned: {intent_value}, expected one of {valid_intents}")
+                    if attempt < max_retries - 1:
+                        time.sleep(base_delay * (2 ** attempt))
+                        continue
+                    intent_value = "UNKNOWN"
+                    confidence = 0.0
+                
+                logger.info(f"Intent: {intent_value} (confidence: {confidence})")
+                
+                return json.dumps({
+                    "status": "success",
+                    "intent": intent_value,
+                    "confidence": confidence,
+                    "reasoning": reasoning
+                })
+            
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error on attempt {attempt + 1}: {str(e)}")
+                logger.error(f"Raw response text: '{response_text}'")
+                if attempt < max_retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+                    continue
+                return json.dumps({
                     "status": "error",
                     "intent": "UNKNOWN",
                     "confidence": 0.0,
-                    "error": "Empty LLM response"
+                    "error": f"Invalid JSON response after all retries: {str(e)}"
                 })
-                # Audit the error
-                latency_ms = int((time.time() - start_time) * 1000)
-                self._audit_log(
-                    agent_name="classify_intent",
-                    caller="system",
-                    input_text=query,
-                    output_text=error_output,
-                    latency_ms=latency_ms,
-                    safety_result="error",
-                    error_message="Empty LLM response"
-                )
-                return error_output
-
-            logger.info(f"Response text length: {len(response.text) if response.text else 0}")
-            logger.info(f"Response text: {response.text[:500] if response.text else 'EMPTY'}")
-            response_text = response.text.strip()
-
-            if response_text.startswith("```"):
-                # Remove opening fence (```json or ```
-                response_text = response_text.lstrip("`").lstrip("json").lstrip()
-                # Remove closing fence (```)
-                response_text = response_text.rstrip("`").strip()
-
-            result = json.loads(response_text)
-
-            # Ensure valid structure
-            intent_value = result.get("intent", "UNKNOWN")
-            confidence = float(result.get("confidence", 0.0))
-            reasoning = result.get("reasoning", "")
-
-            logger.info(f"Intent: {intent_value} (confidence: {confidence})")
-
-            output = json.dumps({
-                "status": "success",
-                "intent": intent_value,
-                "confidence": confidence,
-                "reasoning": reasoning
-            })
             
-            # Audit the successful classification
-            latency_ms = int((time.time() - start_time) * 1000)
-            self._audit_log(
-                agent_name="classify_intent",
-                caller="system",
-                input_text=query,
-                output_text=output,
-                latency_ms=latency_ms,
-                safety_result="allowed",
-                metadata={"intent": intent_value, "confidence": confidence}
-            )
-            
-            return output
-        except Exception as e:
-            logger.error(f"Intent classification error: {str(e)}")
-            error_output = json.dumps({
-                "status": "error",
-                "intent": "UNKNOWN",
-                "confidence": 0.0,
-                "error": str(e)
-            })
-            
-            # Audit the error
-            latency_ms = int((time.time() - start_time) * 1000)
-            self._audit_log(
-                agent_name="classify_intent",
-                caller="system",
-                input_text=query,
-                output_text=error_output,
-                latency_ms=latency_ms,
-                safety_result="error",
-                error_message=str(e)
-            )
-            
-            return error_output
+            except Exception as e:
+                logger.error(f"Intent classification error on attempt {attempt + 1}: {str(e)}", exc_info=True)
+                
+                # Check if it's a quota exceeded error
+                if "RESOURCE_EXHAUSTED" in str(e) or "Quota exceeded" in str(e):
+                    logger.warning(f"Vertex AI quota exceeded on attempt {attempt + 1}, using fallback logic")
+                    # For quota exceeded, try to classify based on keywords as fallback
+                    query_lower = query.lower()
+                    if any(word in query_lower for word in ['balance', 'how much', 'current']):
+                        fallback_intent = "BALANCE_CHECK"
+                        fallback_confidence = 0.8
+                    elif any(word in query_lower for word in ['report', 'wire', 'transfer']):
+                        fallback_intent = "REPORT_REQUEST"
+                        fallback_confidence = 0.8
+                    elif any(word in query_lower for word in ['upgrade', 'change plan', 'gold', 'silver']):
+                        fallback_intent = "PLAN_UPGRADE"
+                        fallback_confidence = 0.8
+                    elif any(word in query_lower for word in ['plan', 'pricing', 'features', 'what is']):
+                        fallback_intent = "PLAN_INFO"
+                        fallback_confidence = 0.8
+                    else:
+                        fallback_intent = "UNKNOWN"
+                        fallback_confidence = 0.5
+                    
+                    return json.dumps({
+                        "status": "success",
+                        "intent": fallback_intent,
+                        "confidence": fallback_confidence,
+                        "reasoning": f"Fallback classification due to API quota limit: {str(e)}",
+                        "fallback": True
+                    })
+                
+                if attempt < max_retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+                    continue
+                return json.dumps({
+                    "status": "error",
+                    "intent": "UNKNOWN",
+                    "confidence": 0.0,
+                    "error": str(e)
+                })
+        
+        # This should never be reached, but just in case
+        return json.dumps({
+            "status": "error",
+            "intent": "UNKNOWN",
+            "confidence": 0.0,
+            "error": "Maximum retries exceeded"
+        })
     
     @adk_tool
     def check_compliance(self, user_id: str, intent: str) -> str:
@@ -364,13 +419,9 @@ Rules:
             SELECT 
                 p.plan_tier,
                 p.kyc_verified,
-                p.compliance_status,
-                COALESCE(ARRAY_AGG(DISTINCT r.feature IGNORE NULLS), []) as allowed_features
+                p.compliance_status
             FROM `{self.project_id}.client_data.client_profiles` p
-            LEFT JOIN `{self.project_id}.client_data.compliance_rules` r
-                ON p.plan_tier = r.tier AND r.is_allowed = true
             WHERE p.user_id = @user_id
-            GROUP BY p.plan_tier, p.kyc_verified, p.compliance_status
             """
             
             job_config = bigquery.QueryJobConfig(
@@ -381,6 +432,7 @@ Rules:
             
             results = list(self.bq_client.query(query, job_config=job_config).result())
             
+            logger.info(f"User profile query returned {len(results)} rows")
             if not results:
                 error_output = json.dumps({
                     "status": "error",
@@ -402,7 +454,20 @@ Rules:
             user_data = results[0]
             plan_tier = user_data.plan_tier
             kyc_verified = user_data.kyc_verified
-            allowed_features = user_data.allowed_features or []
+            
+            # Convert kyc_verified to boolean if it's a string
+            if isinstance(kyc_verified, str):
+                kyc_verified = kyc_verified.lower() in ('true', '1', 'yes')
+            
+            # Define access matrix (simplified - no need for complex JOIN)
+            access_matrix = {
+                "gold": ["REPORT_REQUEST", "PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK"],
+                "silver": ["REPORT_REQUEST", "PLAN_INFO", "BALANCE_CHECK"],
+                "bronze": ["BALANCE_CHECK", "PLAN_INFO"]
+            }
+            
+            allowed_intents = access_matrix.get(plan_tier.lower() if plan_tier else "", [])
+            intent_allowed = intent in allowed_intents
             
             # Define access matrix
             access_matrix = {
@@ -421,7 +486,7 @@ Rules:
                     "compliance_status": "REQUIRES_MFA",
                     "reason": "KYC verification required for wire reports",
                     "requires_verification": True,
-                    "allowed_features": allowed_features
+                    "allowed_features": allowed_intents
                 })
                 latency_ms = int((time.time() - start_time) * 1000)
                 self._audit_log(
@@ -441,7 +506,7 @@ Rules:
                     "compliance_status": "DENIED",
                     "reason": f"Your {plan_tier} plan doesn't include {intent}",
                     "requires_verification": False,
-                    "allowed_features": allowed_features
+                    "allowed_features": allowed_intents
                 })
                 latency_ms = int((time.time() - start_time) * 1000)
                 self._audit_log(
@@ -459,7 +524,7 @@ Rules:
                 "status": "success",
                 "compliance_status": "ALLOWED",
                 "plan_tier": plan_tier,
-                "allowed_features": allowed_features
+                "allowed_features": allowed_intents
             })
             latency_ms = int((time.time() - start_time) * 1000)
             self._audit_log(
@@ -744,11 +809,16 @@ Rules:
         
         try:
             results = self.bq_client.query(bq_query, job_config=job_config).result()
-            reports = [dict(row) for row in results]
-            
-            for report in reports:
-                if hasattr(report.get('report_date'), 'isoformat'):
-                    report['report_date'] = report['report_date'].isoformat()
+            reports = []
+            for row in results:
+                report_dict = dict(row)
+                # Convert Decimal objects to floats for JSON serialization
+                if 'wire_amount' in report_dict and hasattr(report_dict['wire_amount'], '__float__'):
+                    report_dict['wire_amount'] = float(report_dict['wire_amount'])
+                # Convert timestamp to ISO format
+                if hasattr(report_dict.get('report_date'), 'isoformat'):
+                    report_dict['report_date'] = report_dict['report_date'].isoformat()
+                reports.append(report_dict)
             
             return {
                 "reports": reports,
@@ -785,7 +855,16 @@ Rules:
         
         try:
             results = self.bq_client.query(bq_query).result()
-            plans = [dict(row) for row in results]
+            plans = []
+            for row in results:
+                plan_dict = dict(row)
+                # Convert Decimal objects to floats for JSON serialization
+                if 'monthly_price' in plan_dict and hasattr(plan_dict['monthly_price'], '__float__'):
+                    plan_dict['monthly_price'] = float(plan_dict['monthly_price'])
+                if 'annual_price' in plan_dict and hasattr(plan_dict['annual_price'], '__float__'):
+                    plan_dict['annual_price'] = float(plan_dict['annual_price'])
+                plans.append(plan_dict)
+            
             return {"plans": plans, "message": "All available plans retrieved"}
         except Exception as e:
             logger.error(f"Plan info agent error: {str(e)}")
@@ -799,7 +878,7 @@ Rules:
             COUNT(*) as transaction_count,
             MAX(created_at) as last_transaction
         FROM `{self.project_id}.client_data.user_transactions`
-        WHERE user_id = @user_id AND created_at >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+        WHERE user_id = @user_id AND created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)
         """
         
         job_config = bigquery.QueryJobConfig(
@@ -950,15 +1029,15 @@ Rules:
             })
             
             # Record metrics
-            self.metrics.record_execution({
-                "user_id": user_id,
-                "intent": intent,
-                "confidence": confidence,
-                "agent_name": target_agent,
-                "execution_time_ms": sum(log.get("duration_ms", 0) for log in execution_log),
-                "success": True,
-                "error_message": None
-            })
+            #self.metrics.record_execution({
+            #    "user_id": user_id,
+            #    "intent": intent,
+            #    "confidence": confidence,
+            #    "agent_name": target_agent,
+            #    "execution_time_ms": sum(log.get("duration_ms", 0) for log in execution_log),
+            #    "success": True,
+            #    "error_message": None
+            #})
             
             # Return final response
             final_response = {
@@ -996,16 +1075,16 @@ Rules:
         
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
-            
-            self.metrics.record_execution({
-                "user_id": user_id,
-                "intent": "UNKNOWN",
-                "confidence": 0.0,
-                "agent_name": "unknown",
-                "execution_time_ms": 0,
-                "success": False,
-                "error_message": str(e)
-            })
+
+            #self.metrics.record_execution({
+            #    "user_id": user_id,
+            #    "intent": "UNKNOWN",
+            #    "confidence": 0.0,
+            #    "agent_name": "unknown",
+            #    "execution_time_ms": 0,
+            #    "success": False,
+            #    "error_message": str(e)
+            #})
             
             error_result = {
                 "status": "error",
@@ -1111,7 +1190,7 @@ __all__ = [
     'ComplianceCheckResult',
     'RoutingDecision',
     'AgentExecutionResult',
-    'MetricsCollector',
+    # 'MetricsCollector',
     'create_root_agent'
 ]
    

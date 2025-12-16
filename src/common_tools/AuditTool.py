@@ -7,7 +7,7 @@ import uuid
 import os
 
 client = bigquery.Client()
-TABLE_ID = os.getenv("BQ_TABLE_ID", "ccibt-hack25ww7-743.AuditTrail.AgentEvents")
+TABLE_ID = os.getenv("BQ_TABLE_ID", "ccibt-hack25ww7-743.client_data.agent_audit_logs")
 
 async def async_log_event(
     agent_name,
