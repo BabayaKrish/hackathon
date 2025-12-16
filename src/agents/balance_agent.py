@@ -4,13 +4,29 @@
 import json
 import logging
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
+import asyncio
 
 from google.cloud import bigquery
 from common_tools.AuditTool import async_log_event
 import vertexai
 from vertexai.generative_models import GenerativeModel
+
+try:
+    from google.cloud import bigquery
+except Exception:
+    bigquery = None
+
+try:
+    import vertexai
+    from vertexai.generative_models import GenerativeModel
+except Exception:
+    vertexai = None
+
+    class GenerativeModel:
+        def __init__(self, *args, **kwargs):
+            pass
 
 # ==================== Configuration ====================
 
@@ -107,7 +123,7 @@ class BalanceAgent:
                     "user_id": user_id,
                     "balance": 0.0,
                     "currency": "USD",
-                    "last_update": datetime.utcnow().isoformat(),
+                    "last_update": datetime.now(timezone.utc).isoformat(),
                     "note": "No transactions found for user"
                 }
                 await self._audit_log("balance_agent.get_current_balance", user_id, f"user_id: {user_id}", json.dumps(output), latency_ms, metadata={"user_id": user_id})
@@ -411,7 +427,7 @@ class BalanceAgent:
                 },
                 "execution_log": execution_log,
                 "total_execution_time_ms": elapsed_time,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             await self._audit_log(
                 "balance_agent.process_balance_request",
