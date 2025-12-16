@@ -1,13 +1,11 @@
-# frontend/app.py
+# frontend/app.py - FIXED VERSION WITH ROUTING
 import streamlit as st
 import requests
-import plotly.graph_objects as go
-import plotly.express as px
-from datetime import datetime
 import json
+from datetime import datetime
 
 # Configuration
-API_BASE_URL = "http://localhost:8000"  # Update for production
+API_BASE_URL = "http://localhost:8080"
 
 st.set_page_config(
     page_title="Data Access Plans Assistant",
@@ -16,439 +14,291 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
-st.markdown("""
-<style>
-    body, .stApp {
-        background: linear-gradient(135deg, #f8fafc 0%, #e0e7ff 100%) !important;
-        font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
-    }
-    .stApp {
-        background: linear-gradient(120deg, #fdf6e3 0%, #e0c3fc 100%) !important;
-    }
-    .main-header {
-        font-size: 3rem;
-        font-weight: bold;
-        background: linear-gradient(120deg, #1e3a8a, #3b82f6);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 1rem;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem;
-        border-radius: 10px;
-        color: white;
-    }
-    .chat-message {
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-    }
-    .user-message {
-        background-color: #e3f2fd;
-        border-left: 4px solid #2196f3;
-    }
-    .assistant-message {
-        background-color: #f3e5f5;
-        border-left: 4px solid #9c27b0;
-    }
-    .css-18e3th9, .stButton>button, .stDownloadButton>button, .stRadio>div, .stSelectbox>div, .stTextInput>div, .stTextArea>div, .stToggle>div {
-        border-radius: 12px !important;
-        box-shadow: 0 2px 8px rgba(160, 120, 255, 0.08);
-        font-size: 1.08rem;
-    }
-    .stButton>button, .stDownloadButton>button {
-        background: linear-gradient(90deg, #7f53ac 0%, #657ced 100%);
-        color: #fff;
-        border: none;
-        font-weight: 600;
-        transition: background 0.2s;
-    }
-    .stButton>button:hover, .stDownloadButton>button:hover {
-        background: linear-gradient(90deg, #ff6a00 0%, #ee0979 100%);
-        color: #fff;
-    }
-    .stTabs [data-baseweb="tab"] {
-        background: #fff0f6;
-        color: #7f53ac;
-        border-radius: 10px 10px 0 0;
-        margin-right: 4px;
-        font-weight: 600;
-        border: 2px solid #e0c3fc;
-        border-bottom: none;
-    }
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(90deg, #7f53ac 0%, #657ced 100%);
-        color: #fff;
-        border-bottom: 2px solid #fff;
-    }
-    .stMetric {
-        background: #f3e8ff;
-        border-radius: 10px;
-        padding: 10px 16px;
-        margin-bottom: 8px;
-        box-shadow: 0 1px 4px rgba(127, 83, 172, 0.08);
-    }
-    .stContainer {
-        background: rgba(255,255,255,0.7);
-        border-radius: 14px;
-        box-shadow: 0 2px 12px rgba(127, 83, 172, 0.07);
-        padding: 18px 20px;
-        margin-bottom: 18px;
-    }
-    .stSidebar {
-        background: linear-gradient(120deg, #e0c3fc 0%, #fdf6e3 100%) !important;
-        border-radius: 0 20px 20px 0;
-        box-shadow: 2px 0 12px rgba(127, 83, 172, 0.07);
-    }
-    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
-        color: #7f53ac;
-        font-weight: 700;
-    }
-    .stMarkdown p, .stMarkdown ul, .stMarkdown li {
-        color: #3d246c;
-    }
-    .stDataFrame, .stTable {
-        background: #fff;
-        border-radius: 10px;
-        box-shadow: 0 1px 4px rgba(127, 83, 172, 0.08);
-    }
-    .stJson {
-        background: #f3e8ff;
-        border-radius: 10px;
-        padding: 10px;
-    }
-    .stSuccess, .stError, .stWarning {
-        border-radius: 10px;
-        font-weight: 600;
-    }
-    .stChatInput>div>div>textarea {
-        border-radius: 10px !important;
-        background: #f3e8ff !important;
-        color: #3d246c !important;
-    }
-    .stHeader {
-        background: linear-gradient(90deg, #7f53ac 0%, #657ced 100%);
-        color: #fff;
-        border-radius: 10px;
-        padding: 10px 20px;
-        margin-bottom: 18px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # Initialize session state
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'current_plan' not in st.session_state:
-    st.session_state.current_plan = 'BRONZE'
+    st.session_state.current_plan = 'SILVER'
 if 'user_id' not in st.session_state:
     st.session_state.user_id = 'demo_user'
 
-# Sidebar
+# ===== SIDEBAR =====
 with st.sidebar:
-    st.image("https://via.placeholder.com/150x50/1e3a8a/ffffff?text=Bank+Logo", use_column_width=True)
-    st.markdown("## User Profile")
+    st.markdown("## 👤 User Profile")
     
-    user_id = st.text_input("User ID", value=st.session_state.user_id)
-    st.session_state.user_id = user_id
-    
-    current_plan = st.selectbox(
-        "Current Plan",
-        ["BRONZE", "SILVER", "GOLD", "PREMIUM"],
-        index=["BRONZE", "SILVER", "GOLD", "PREMIUM"].index(st.session_state.current_plan)
+    new_user_id = st.text_input(
+        "User ID",
+        value=st.session_state.user_id,
+        key="user_id_input"
     )
-    st.session_state.current_plan = current_plan
-    
-    st.markdown("---")
-    st.markdown("### Plan Features")
-    
-    plan_features = {
-        "BRONZE": ["General Balance", "Previous Day Reports", "Transaction Search", "Statements"],
-        "SILVER": ["All BRONZE", "Instant Reports", "Expanded Details", "API Access"],
-        "GOLD": ["All SILVER", "Wire Tracking", "ACH Details", "Full API", "Product Subscriptions"],
-        "PREMIUM": ["All GOLD", "Intraday Activity", "Real-time Monitoring", "SWIFT Reports"]
-    }
-    
-    for feature in plan_features[current_plan]:
-        st.markdown(f"✅ {feature}")
-    
-    st.markdown("---")
-    if st.button("Clear Chat History"):
+    if new_user_id != st.session_state.user_id:
+        st.session_state.user_id = new_user_id
         st.session_state.chat_history = []
-        st.rerun()
-
-# Main content
-st.markdown('<h1 class="main-header">📊 Data Access Plans Assistant</h1>', unsafe_allow_html=True)
-st.markdown("Ask me anything about reports, account activity, or plan upgrades!")
-
-# Tabs
-tab1, tab2, tab3 = st.tabs(["💬 Chat Assistant", "📈 Analytics", "🎯 Plan Comparison"])
-
-with tab1:
-    # Chat interface
-    col1, col2 = st.columns([3, 1])
     
-    with col1:
-        # Display chat history
-        chat_container = st.container()
-        with chat_container:
-            for message in st.session_state.chat_history:
-                if message['role'] == 'user':
-                    st.markdown(f'<div class="chat-message user-message"><strong>You:</strong> {message["content"]}</div>', unsafe_allow_html=True)
-                else:
-                    st.markdown(f'<div class="chat-message assistant-message"><strong>Assistant:</strong> {message["content"]}</div>', unsafe_allow_html=True)
-                    
-                    # Display structured response if available
-                    if 'structured_data' in message:
-                        with st.expander("📋 Detailed Response"):
-                            st.json(message['structured_data'])
+    new_plan = st.selectbox(
+        "Plan",
+        ["BRONZE", "SILVER", "GOLD"],
+        index=["BRONZE", "SILVER", "GOLD"].index(st.session_state.current_plan),
+        key="plan_selector"
+    )
+    if new_plan != st.session_state.current_plan:
+        st.session_state.current_plan = new_plan
     
+    if st.button("Clear Chat"):
+        st.session_state.chat_history = []
 
-    # Input area
-    with st.form(key='chat_form', clear_on_submit=True):
-        user_input = st.text_area(
-            "Your question:",
-            placeholder="E.g., 'Show me my wire transfer details' or 'Can I get intraday balance reports?'",
-            height=100,
-            key='user_input'
+# ===== MAIN CHAT =====
+st.markdown("# 💬 Financial Assistant")
+st.caption(f"👤 User: **{st.session_state.user_id}** | Plan: **{st.session_state.current_plan}**")
+
+# Display chat history
+for msg in st.session_state.chat_history:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+def send_to_root_agent(user_input: str) -> Dict:
+    """Send query to Root Agent for intelligent routing"""
+    logger.info(f"[streamlit] Sending to Root Agent: {user_input}")
+    
+    try:
+        response = requests.post(
+            f"{API_BASE_URL}/process-query",
+            json={
+                "user_id": st.session_state.user_id,
+                "query": user_input
+            },
+            timeout=30
         )
         
-        col1, col2, col3 = st.columns([1, 1, 4])
-        with col1:
-            submit_button = st.form_submit_button("Send 🚀", use_container_width=True)
-        with col2:
-            example_button = st.form_submit_button("Example", use_container_width=True)
-    
-    if example_button:
-        user_input = "I need to access intraday balance and wire tracking details. What do I need?"
-        submit_button = True
-    
-    if submit_button and user_input:
-        # Add user message to history
-        st.session_state.chat_history.append({
-            'role': 'user',
-            'content': user_input
-        })
-        
-        # Show loading
-        with st.spinner('Processing your request...'):
-            try:
-                # Call API
-                response = requests.post(
-                    f"{API_BASE_URL}/query",
-                    json={
-                        "query": user_input,
-                        "user_id": st.session_state.user_id,
-                        "current_plan": st.session_state.current_plan,
-                        "context": {}
-                    },
-                    timeout=30
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    
-                    # Format response
-                    formatted_response = format_agent_response(result)
-                    
-                    # Add assistant message
-                    st.session_state.chat_history.append({
-                        'role': 'assistant',
-                        'content': formatted_response,
-                        'structured_data': result
-                    })
-                    
-                    # Show metrics
-                    st.success(f"✅ Confidence: {result['confidence']:.2%} | Intent: {result['intent']}")
-                    
-                else:
-                    st.error(f"Error: {response.status_code} - {response.text}")
-            
-            except Exception as e:
-                st.error(f"Failed to connect to API: {str(e)}")
-        
-        st.rerun()
-
-with tab2:
-    st.markdown("### 📊 Usage Analytics")
-    
-    # Fetch metrics from API
-    try:
-        metrics_response = requests.get(f"{API_BASE_URL}/metrics")
-        if metrics_response.status_code == 200:
-            metrics = metrics_response.json()
-            
-            # Display metrics
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("Total Queries", metrics.get('total_queries', 0))
-                st.markdown('</div>', unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("Avg Confidence", f"{metrics.get('average_confidence', 0):.2%}")
-                st.markdown('</div>', unsafe_allow_html=True)
-            
-            with col3:
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("Avg Latency", f"{metrics.get('average_latency_ms', 0):.0f}ms")
-                st.markdown('</div>', unsafe_allow_html=True)
-            
-            with col4:
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("Accuracy Rate", f"{metrics.get('accuracy_rate', 0):.2%}")
-                st.markdown('</div>', unsafe_allow_html=True)
+        if response.status_code == 200:
+            result = response.json()
+            logger.info(f"[streamlit] ✅ Root Agent responded: {result.get('intent')}")
+            return result
+        else:
+            logger.error(f"[streamlit] ❌ Root Agent error: {response.status_code}")
+            return {"status": "error", "error": response.text}
     
     except Exception as e:
-        st.warning("Unable to fetch metrics from API")
+        logger.error(f"[streamlit] ❌ Failed to call Root Agent: {str(e)}")
+        return {"status": "error", "error": str(e)}
+
+
+# ===== INTENT ROUTING FUNCTION =====
+def detect_intent(query: str) -> tuple:
+    """
+    Detect user intent and route to correct endpoint
+    Returns: (endpoint, request_body)
+    """
+    query_lower = query.lower()
     
-    # Sample visualizations
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Intent distribution
-        intent_data = {
-            'Intent': ['Report Query', 'Plan Upgrade', 'Data Extraction', 'Plan Info'],
-            'Count': [45, 20, 25, 10]
+    # Wire transfer queries
+    if any(word in query_lower for word in ["wire", "transfer"]):
+        return "/report", {
+            "user_id": st.session_state.user_id,
+            "report_type": "wire_details",
+            "format_type": "json"
         }
-        fig = px.pie(intent_data, values='Count', names='Intent', title='Query Intent Distribution')
-        st.plotly_chart(fig, use_container_width=True)
     
-    with col2:
-        # Confidence over time
-        import numpy as np
-        dates = [datetime.now().date() for _ in range(30)]
-        confidences = np.random.normal(0.85, 0.1, 30)
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            y=confidences,
-            mode='lines+markers',
-            name='Confidence',
-            line=dict(color='#3b82f6', width=2)
-        ))
-        fig.update_layout(
-            title='Confidence Score Trend',
-            yaxis_title='Confidence',
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-with tab3:
-    st.markdown("### 🎯 Plan Comparison")
+    # Balance queries
+    elif any(word in query_lower for word in ["balance", "account balance", "how much"]) and "plan" not in query_lower:
+        return "/balance", {
+            "user_id": st.session_state.user_id
+        }
     
-    # Plan comparison table
-    plans_data = {
-        'Feature': [
-            'General Balance Report',
-            'Previous Day Reports',
-            'Intraday Balance',
-            'Wire Tracking',
-            'ACH Details',
-            'API Access',
-            'Real-time Monitoring',
-            'SWIFT Reports'
-        ],
-        'BRONZE': ['✅', '✅', '❌', '❌', '❌', '❌', '❌', '❌'],
-        'SILVER': ['✅', '✅', '❌', '❌', '❌', '⚠️ Limited', '❌', '❌'],
-        'GOLD': ['✅', '✅', '❌', '✅', '✅', '✅', '❌', '❌'],
-        'PREMIUM': ['✅', '✅', '✅', '✅', '✅', '✅', '✅', '✅']
-    }
+    # Transaction queries
+    elif any(word in query_lower for word in ["transaction", "activity", "recent"]):
+        return "/balance/transactions", {
+            "user_id": st.session_state.user_id,
+            "limit": 50,
+            "days_back": 90
+        }
     
-    import pandas as pd
-    df = pd.DataFrame(plans_data)
+    # Plan queries
+    elif any(word in query_lower for word in ["plan", "gold", "silver", "bronze", "feature", "price", "cost"]):
+        return "/plan-info", {
+            "query": query
+        }
     
-    st.dataframe(df, use_container_width=True, height=350)
+    # Upgrade queries
+    elif any(word in query_lower for word in ["upgrade", "upgrade to", "recommend"]):
+        return "/plan", {
+            "user_id": st.session_state.user_id,
+            "current_plan": st.session_state.current_plan.lower()
+        }
     
-    st.markdown("---")
-    
-    # Pricing comparison
-    col1, col2, col3, col4 = st.columns(4)
-    
-    plans_info = [
-        ('BRONZE', '$50/mo', 'Basic features for small businesses'),
-        ('SILVER', '$150/mo', 'Standard features with API access'),
-        ('GOLD', '$300/mo', 'Premium features with full integration'),
-        ('PREMIUM', '$500/mo', 'Enterprise features with real-time data')
-    ]
-    
-    for col, (plan, price, desc) in zip([col1, col2, col3, col4], plans_info):
-        with col:
-            is_current = plan == st.session_state.current_plan
-            border_color = "#3b82f6" if is_current else "#e5e7eb"
-            
-            st.markdown(f"""
-            <div style="border: 2px solid {border_color}; border-radius: 10px; padding: 1rem; height: 200px;">
-                <h3>{plan}</h3>
-                <h2 style="color: #3b82f6;">{price}</h2>
-                <p style="font-size: 0.9rem;">{desc}</p>
-                {"<span style='color: #3b82f6; font-weight: bold;'>Current Plan</span>" if is_current else ""}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            if not is_current:
-                if st.button(f"Upgrade to {plan}", key=f"upgrade_{plan}"):
-                    # Call upgrade API
-                    try:
-                        upgrade_response = requests.post(
-                            f"{API_BASE_URL}/upgrade/execute",
-                            params={"user_id": st.session_state.user_id, "new_plan": plan}
-                        )
-                        if upgrade_response.status_code == 200:
-                            st.success(f"Successfully upgraded to {plan}!")
-                            st.session_state.current_plan = plan
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"Upgrade failed: {str(e)}")
-
-# Helper function
-def format_agent_response(result):
-    """Format agent response for display"""
-    intent = result.get('intent', 'UNKNOWN')
-    confidence = result.get('confidence', 0)
-    agent_result = result.get('result', {})
-    
-    response_parts = []
-    
-    # Add confidence indicator
-    if confidence > 0.8:
-        response_parts.append("I'm confident in this response:")
-    elif confidence > 0.6:
-        response_parts.append("Based on my analysis:")
+    # Default: balance
     else:
-        response_parts.append("Here's what I found (low confidence):")
+        return "/balance", {
+            "user_id": st.session_state.user_id
+        }
+
+# ===== CHAT INPUT & PROCESSING =====
+user_input = st.chat_input(
+    "Ask about balance, plans, wire transfers...",
+    key="chat_input"
+)
+
+if user_input:
+    # Add user message
+    st.session_state.chat_history.append({
+        "role": "user",
+        "content": user_input
+    })
     
-    # Format based on intent
-    if intent == 'REPORT_QUERY':
-        recommended_reports = agent_result.get('recommended_reports', [])
-        if recommended_reports:
-            response_parts.append("\n\n**Recommended Reports:**")
-            for report in recommended_reports[:3]:
-                available = "✅ Available" if report.get('available_in_current_plan') else "⬆️ Upgrade needed"
-                response_parts.append(f"\n- **{report.get('report_name')}** ({available})")
-                response_parts.append(f"  - {report.get('reasoning')}")
+    with st.chat_message("user"):
+        st.markdown(user_input)
+    
+    # Detect intent and call appropriate endpoint
+    with st.spinner("Processing..."):
+        try:
+            endpoint, request_body = detect_intent(user_input)
+            
+            # Special handling for POST requests with/without params
+            if endpoint == "/balance/transactions":
+                response = requests.post(
+                    f"{API_BASE_URL}{endpoint}",
+                    json=request_body,
+                    timeout=10
+                )
+            elif endpoint == "/plan-info":
+                response = requests.post(
+                    f"{API_BASE_URL}{endpoint}",
+                    json=request_body,
+                    timeout=10
+                )
+            else:
+                response = requests.post(
+                    f"{API_BASE_URL}{endpoint}",
+                    json=request_body,
+                    timeout=10
+                )
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                # Format response based on endpoint
+                if endpoint == "/report":
+                    # Wire report formatting
+                    if result.get("status") == "success":
+                        data = result.get("report_data", [])
+                        if isinstance(data, str):
+                            data = json.loads(data) if data.startswith("[") else data
+                        
+                        if isinstance(data, list) and len(data) > 0:
+                            assistant_response = "**Wire Transfer Details:**\n\n"
+                            for i, wire in enumerate(data, 1):
+                                if isinstance(wire, dict):
+                                    wire_amount = wire.get('wire_amount', wire.get('amount', 'N/A'))
+                                    destination = wire.get('destination_bank', 'N/A')
+                                    status = wire.get('status', 'N/A')
+                                    assistant_response += f"{i}. Amount: ${wire_amount} → {destination} ({status})\n"
+                        else:
+                            assistant_response = f"Wire Details Found: {len(data)} records"
+                    else:
+                        assistant_response = f"Error: {result.get('error', 'Unknown error')}"
+                
+                elif endpoint == "/balance":
+                    # Balance formatting
+                    if result.get("status") == "success":
+                        balance = result.get('balance', 'N/A')
+                        transactions = result.get('transaction_count', 0)
+                        formatted_balance = f"{balance:,.2f}" if isinstance(balance, (int, float)) else balance
+                        assistant_response = f"""
+**Your Account Balance:** ${formatted_balance}
+
+**Recent Activity:**
+- Total Transactions: {transactions}
+- Plan: {st.session_state.current_plan}
+
+✅ Use 'show my wire transfers' for wire details
+✅ Use 'what's in Gold plan' for plan info
+"""
+                    else:
+                        assistant_response = f"Error: {result.get('error', 'Unknown')}"
+                
+                elif endpoint == "/balance/transactions":
+                    # Transaction formatting
+                    if result.get("status") == "success":
+                        transactions = result.get('transactions', [])
+                        assistant_response = "**Recent Transactions:**\n\n"
+                        for i, txn in enumerate(transactions[:5], 1):
+                            txn_type = txn.get('transaction_type', 'N/A')
+                            amount = txn.get('amount', 'N/A')
+                            assistant_response += f"{i}. {txn_type}: ${amount}\n"
+                    else:
+                        assistant_response = f"Error: {result.get('error', 'Unknown')}"
+                
+                elif endpoint == "/plan-info":
+                    # Plan info formatting
+                    # Case 1: The agent returned a text answer (LLM response)
+                    if "response" in result or "answer" in result:
+                        assistant_response = result.get("response", result.get("answer"))
+                    
+                    # Case 2: The agent returned structured plan data (Dictionary)
+                    elif "data" in result and "plans" in result["data"]:
+                        plans = result["data"]["plans"]
+                        lines = ["Here are the plan details:\n"]
+                        
+                        # Loop through each plan found in the data
+                        for plan_key, p in plans.items():
+                            lines.append(f"### 🏷️ {p.get('name', plan_key).title()} Plan")
+                            lines.append(f"**Price**: ${p.get('price_monthly')}/mo")
+                            lines.append(f"_{p.get('description', '')}_")
+                            if "features" in p:
+                                lines.append("**Features:**")
+                                for feature in p["features"]:
+                                    lines.append(f"- {feature}")
+                            lines.append("---")
+                        
+                        assistant_response = "\n".join(lines)
+                    
+                    # Case 3: Fallback
+                    else:
+                        assistant_response = str(result)
+                
+                elif endpoint == "/plan":
+                    # Plan analysis formatting
+                    if result.get("status") == "success":
+                        recommendation = result.get('recommendation', 'N/A')
+                        assistant_response = f"**Plan Recommendation:**\n\n{recommendation}"
+                    else:
+                        assistant_response = f"Error: {result.get('error', 'Unknown')}"
+                
+                else:
+                    assistant_response = json.dumps(result, indent=2)
+                
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": assistant_response
+                })
+                
+                with st.chat_message("assistant"):
+                    st.markdown(assistant_response)
+            
+            elif response.status_code == 404:
+                error_msg = f"❌ Endpoint not found: {endpoint}"
+                st.session_state.chat_history.append({"role": "assistant", "content": error_msg})
+                with st.chat_message("assistant"):
+                    st.error(error_msg)
+            
+            else:
+                error_msg = f"Error {response.status_code}: {response.text}"
+                st.session_state.chat_history.append({"role": "assistant", "content": error_msg})
+                with st.chat_message("assistant"):
+                    st.error(error_msg)
         
-        if agent_result.get('upgrade_recommended'):
-            response_parts.append(f"\n\n💡 **Recommendation:** Upgrade to {agent_result.get('recommended_plan')} for full access")
-    
-    elif intent == 'PLAN_UPGRADE':
-        if agent_result.get('upgrade_needed'):
-            response_parts.append(f"\n\n**Upgrade Recommended:** {agent_result.get('recommended_plan')}")
-            response_parts.append(f"\n**Additional Cost:** ${agent_result.get('cost_analysis', {}).get('additional_cost', 0)}/month")
-            response_parts.append(f"\n**ROI:** {agent_result.get('roi_justification', 'N/A')}")
-    
-    return "\n".join(response_parts)
+        except requests.exceptions.ConnectionError:
+            error_msg = "❌ Cannot connect to backend on port 8080"
+            st.session_state.chat_history.append({"role": "assistant", "content": error_msg})
+            with st.chat_message("assistant"):
+                st.error(error_msg)
+        
+        except Exception as e:
+            error_msg = f"Error: {str(e)}"
+            st.session_state.chat_history.append({"role": "assistant", "content": error_msg})
+            with st.chat_message("assistant"):
+                st.error(error_msg)
 
 # Footer
 st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: #666;">
-    <p>Powered by SuperNova Hackathon team</p>
-</div>
-""", unsafe_allow_html=True)
-
+st.markdown("*Powered by Multi-Agent AI | FastAPI + Streamlit + BigQuery*")
