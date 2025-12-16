@@ -612,6 +612,38 @@ class PlanAgent:
             }
 
 
+    def get_all_clients_with_plans(self) -> Dict[str, Any]:
+        """
+        Retrieve all clients and their current plans from client_profiles.
+
+        Returns:
+            Dictionary with status and a list of clients with their plans.
+        """
+        logger.info("Retrieving all clients and their plans")
+        try:
+            query = f"""
+                SELECT user_id, plan_tier
+                FROM `{self.project_id}.client_data.client_profiles`
+            """
+            results = self.bq_client.query(query).result()
+            clients = []
+            for row in results:
+                clients.append({
+                    "user_id": row.user_id,
+                    "plan_tier": row.plan_tier
+                })
+            return {
+                "status": "success",
+                "clients": clients,
+                "total_clients": len(clients)
+            }
+        except Exception as e:
+            logger.error(f"Error retrieving clients: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "clients": []
+            }
 # ==================== Exports ====================
 
 __all__ = ['PlanAgent']
