@@ -10,12 +10,19 @@ from datetime import datetime
 from enum import Enum
 import time
 from functools import wraps
+import asyncio
+import sys
+import os
+
+# Add parent directory to path for imports
+# sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'common_tools'))
+# sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'common_tools'))
 
 from google.cloud import bigquery
 from google.api_core.exceptions import GoogleAPIError as GoogleCloudError
-import vertexai
 from vertexai.generative_models import GenerativeModel, Tool
-
+import vertexai
+from common_tools.AuditTool import async_log_event
 # ==================== Configuration & Types ====================
 
 class Intent(str, Enum):
@@ -140,6 +147,52 @@ class RootAgent:
         
         logger.info(f"RootAgent initialized for project {project_id}")
     
+    # ==================== Audit Logging Helper ====================
+    
+    async def _audit_log(
+        self,
+        agent_name: str,
+        caller: str,
+        input_text: str,
+        output_text: str,
+        latency_ms: float,
+        safety_result: str = "allowed",
+        error_message: Optional[str] = None,
+        metadata: Optional[Dict] = None
+    ):
+        """
+        Log event to audit trail using AuditTool.
+        
+        Args:
+            agent_name: Name of the agent performing the action
+            caller: Caller context (user_id or function name)
+            input_text: Input to the operation
+            output_text: Output from the operation
+            latency_ms: Execution time in milliseconds
+            safety_result: Compliance status (allowed, denied, etc.)
+            error_message: Error message if any
+            metadata: Additional metadata to log
+        """
+        if async_log_event is None:
+            logger.debug("AuditTool not available, skipping audit logging")
+            return
+        
+        try:
+            result = await async_log_event(
+                agent_name=agent_name,
+                model_name="gemini-2.0-flash-exp",
+                caller=caller,
+                input_text=input_text,
+                output_text=output_text,
+                latency_ms=latency_ms,
+                safety_result=safety_result,
+                error_message=error_message,
+                metadata=metadata
+            )
+            logger.info(f"Audit logged: {result}")
+        except Exception as e:
+            logger.error(f"Failed to log audit event: {str(e)}")
+    
     # ==================== Tool Definitions ====================
     
     @adk_tool
@@ -164,6 +217,8 @@ class RootAgent:
             Output: {"intent": "REPORT_REQUEST", "confidence": 0.95, "reasoning": "..."}
         """
         logger.info(f"Classifying intent for query: {query}")
+        
+        start_time = time.time()
         
         prompt = f"""
 You are a financial services intent classifier. Analyze the following customer query and determine their intent.
@@ -196,18 +251,28 @@ Rules:
 
             if not response.text or not response.text.strip():
                 logger.warning(f"Empty response from LLM for query: {query}")
-                return json.dumps({
+                error_output = json.dumps({
                     "status": "error",
                     "intent": "UNKNOWN",
                     "confidence": 0.0,
                     "error": "Empty LLM response"
                 })
-        
+                # Audit the error
+                latency_ms = int((time.time() - start_time) * 1000)
+                self._audit_log(
+                    agent_name="classify_intent",
+                    caller="system",
+                    input_text=query,
+                    output_text=error_output,
+                    latency_ms=latency_ms,
+                    safety_result="error",
+                    error_message="Empty LLM response"
+                )
+                return error_output
 
             logger.info(f"Response text length: {len(response.text) if response.text else 0}")
             logger.info(f"Response text: {response.text[:500] if response.text else 'EMPTY'}")
             response_text = response.text.strip()
-
 
             if response_text.startswith("```"):
                 # Remove opening fence (```json or ```
@@ -217,21 +282,6 @@ Rules:
 
             result = json.loads(response_text)
 
-            logger.info(f"Response text length: {len(response.text) if response.text else 0}")
-            logger.info(f"Response text: {response.text[:500] if response.text else 'EMPTY'}")
-
-
-            if not response.text or not response.text.strip():
-                logger.warning(f"Empty response from LLM for query: {query}")
-                return json.dumps({
-                    "status": "error",
-                    "intent": "UNKNOWN",
-                    "confidence": 0.0,
-                    "error": "Empty LLM response"
-                })
-
-            result = json.loads(response.text.strip())
-
             # Ensure valid structure
             intent_value = result.get("intent", "UNKNOWN")
             confidence = float(result.get("confidence", 0.0))
@@ -239,21 +289,48 @@ Rules:
 
             logger.info(f"Intent: {intent_value} (confidence: {confidence})")
 
-            
-            return json.dumps({
+            output = json.dumps({
                 "status": "success",
                 "intent": intent_value,
                 "confidence": confidence,
                 "reasoning": reasoning
             })
+            
+            # Audit the successful classification
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._audit_log(
+                agent_name="classify_intent",
+                caller="system",
+                input_text=query,
+                output_text=output,
+                latency_ms=latency_ms,
+                safety_result="allowed",
+                metadata={"intent": intent_value, "confidence": confidence}
+            )
+            
+            return output
         except Exception as e:
             logger.error(f"Intent classification error: {str(e)}")
-            return json.dumps({
+            error_output = json.dumps({
                 "status": "error",
                 "intent": "UNKNOWN",
                 "confidence": 0.0,
                 "error": str(e)
             })
+            
+            # Audit the error
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._audit_log(
+                agent_name="classify_intent",
+                caller="system",
+                input_text=query,
+                output_text=error_output,
+                latency_ms=latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            
+            return error_output
     
     @adk_tool
     def check_compliance(self, user_id: str, intent: str) -> str:
@@ -279,6 +356,8 @@ Rules:
         """
         logger.info(f"Checking compliance for user {user_id} intent {intent}")
         
+        start_time = time.time()
+        
         try:
             # Query user profile and plan tier
             query = f"""
@@ -303,11 +382,22 @@ Rules:
             results = list(self.bq_client.query(query, job_config=job_config).result())
             
             if not results:
-                return json.dumps({
+                error_output = json.dumps({
                     "status": "error",
                     "compliance_status": "DENIED",
                     "reason": "User not found"
                 })
+                latency_ms = int((time.time() - start_time) * 1000)
+                self._audit_log(
+                    agent_name="check_compliance",
+                    caller=user_id,
+                    input_text=f"intent:{intent}",
+                    output_text=error_output,
+                    latency_ms=latency_ms,
+                    safety_result="denied",
+                    error_message="User not found"
+                )
+                return error_output
             
             user_data = results[0]
             plan_tier = user_data.plan_tier
@@ -326,37 +416,81 @@ Rules:
             
             # Check KYC requirements for sensitive operations
             if intent == "REPORT_REQUEST" and not kyc_verified:
-                return json.dumps({
+                output = json.dumps({
                     "status": "success",
                     "compliance_status": "REQUIRES_MFA",
                     "reason": "KYC verification required for wire reports",
                     "requires_verification": True,
                     "allowed_features": allowed_features
                 })
+                latency_ms = int((time.time() - start_time) * 1000)
+                self._audit_log(
+                    agent_name="check_compliance",
+                    caller=user_id,
+                    input_text=f"intent:{intent}",
+                    output_text=output,
+                    latency_ms=latency_ms,
+                    safety_result="requires_mfa",
+                    metadata={"plan_tier": plan_tier, "kyc_verified": kyc_verified}
+                )
+                return output
             
             if not intent_allowed:
-                return json.dumps({
+                output = json.dumps({
                     "status": "success",
                     "compliance_status": "DENIED",
                     "reason": f"Your {plan_tier} plan doesn't include {intent}",
                     "requires_verification": False,
                     "allowed_features": allowed_features
                 })
+                latency_ms = int((time.time() - start_time) * 1000)
+                self._audit_log(
+                    agent_name="check_compliance",
+                    caller=user_id,
+                    input_text=f"intent:{intent}",
+                    output_text=output,
+                    latency_ms=latency_ms,
+                    safety_result="denied",
+                    metadata={"plan_tier": plan_tier, "intent": intent}
+                )
+                return output
             
-            return json.dumps({
+            output = json.dumps({
                 "status": "success",
                 "compliance_status": "ALLOWED",
                 "plan_tier": plan_tier,
                 "allowed_features": allowed_features
             })
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._audit_log(
+                agent_name="check_compliance",
+                caller=user_id,
+                input_text=f"intent:{intent}",
+                output_text=output,
+                latency_ms=latency_ms,
+                safety_result="allowed",
+                metadata={"plan_tier": plan_tier, "intent": intent}
+            )
+            return output
         
         except GoogleCloudError as e:
             logger.error(f"BigQuery error: {str(e)}")
-            return json.dumps({
+            error_output = json.dumps({
                 "status": "error",
                 "compliance_status": "DENIED",
                 "error": f"System error: {str(e)}"
             })
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._audit_log(
+                agent_name="check_compliance",
+                caller=user_id,
+                input_text=f"intent:{intent}",
+                output_text=error_output,
+                latency_ms=latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            return error_output
     
     @adk_tool
     def route_to_agent(self, intent: str, user_id: str) -> str:
@@ -379,6 +513,8 @@ Rules:
         """
         logger.info(f"Routing {intent} to sub-agent")
         
+        start_time = time.time()
+        
         agent_map = {
             "REPORT_REQUEST": "report_agent",
             "PLAN_UPGRADE": "plan_agent",
@@ -388,7 +524,7 @@ Rules:
         
         target_agent = agent_map.get(intent, "general_agent")
         
-        return json.dumps({
+        output = json.dumps({
             "status": "success",
             "target_agent": target_agent,
             "intent": intent,
@@ -399,6 +535,19 @@ Rules:
                 "agent_service_url": f"http://localhost:8000/{target_agent}"
             }
         })
+        
+        latency_ms = int((time.time() - start_time) * 1000)
+        self._audit_log(
+            agent_name="route_to_agent",
+            caller=user_id,
+            input_text=f"intent:{intent}",
+            output_text=output,
+            latency_ms=latency_ms,
+            safety_result="allowed",
+            metadata={"target_agent": target_agent, "intent": intent}
+        )
+        
+        return output
     
     @adk_tool
     def execute_sub_agent(
@@ -442,21 +591,48 @@ Rules:
             else:
                 data = {"error": f"Unknown agent: {target_agent}"}
             
-            elapsed_ms = (time.time() - start_time) * 1000
+            elapsed_ms = int((time.time() - start_time) * 1000)
             
-            return json.dumps({
+            output = json.dumps({
                 "status": "success",
                 "agent": target_agent,
                 "data": data,
                 "execution_time_ms": elapsed_ms
             })
+            
+            # Audit the sub-agent execution
+            self._audit_log(
+                agent_name=target_agent,
+                caller=user_id,
+                input_text=query,
+                output_text=output,
+                latency_ms=elapsed_ms,
+                safety_result="allowed",
+                metadata={"intent": intent, "query": query}
+            )
+            
+            return output
         except Exception as e:
             logger.error(f"Sub-agent execution error: {str(e)}")
-            return json.dumps({
+            error_output = json.dumps({
                 "status": "error",
                 "agent": target_agent,
                 "error": str(e)
             })
+            
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            self._audit_log(
+                agent_name=target_agent,
+                caller=user_id,
+                input_text=query,
+                output_text=error_output,
+                latency_ms=elapsed_ms,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"intent": intent}
+            )
+            
+            return error_output
     
     @adk_tool
     def aggregate_results(
@@ -484,6 +660,8 @@ Rules:
         """
         logger.info("Aggregating sub-agent results")
         
+        start_time = time.time()
+        
         try:
             # Determine next actions
             next_actions_map = {
@@ -501,7 +679,7 @@ Rules:
             except:
                 agent_data = {"raw_data": sub_agent_data}
             
-            return json.dumps({
+            output = json.dumps({
                 "status": "success",
                 "intent": intent,
                 "confidence": confidence,
@@ -509,12 +687,39 @@ Rules:
                 "next_actions": next_actions,
                 "reasoning": f"Processed {intent} with {confidence:.0%} confidence"
             })
+            
+            # Audit the aggregation
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._audit_log(
+                agent_name="aggregate_results",
+                caller="system",
+                input_text=f"intent:{intent},confidence:{confidence}",
+                output_text=output,
+                latency_ms=latency_ms,
+                safety_result="allowed",
+                metadata={"intent": intent, "confidence": confidence, "next_actions": next_actions}
+            )
+            
+            return output
         except Exception as e:
             logger.error(f"Aggregation error: {str(e)}")
-            return json.dumps({
+            error_output = json.dumps({
                 "status": "error",
                 "error": str(e)
             })
+            
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._audit_log(
+                agent_name="aggregate_results",
+                caller="system",
+                input_text=f"intent:{intent}",
+                output_text=error_output,
+                latency_ms=latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            
+            return error_output
     
     # ==================== Sub-Agent Execution Methods ====================
     
@@ -641,6 +846,7 @@ Rules:
         logger.info(f"Processing query for user {user_id}: {query}")
         
         execution_log = []
+        overall_start_time = time.time()
         
         try:
             # Step 1: Classify Intent
@@ -675,7 +881,7 @@ Rules:
             
             # Return early if compliance fails
             if compliance_status != "ALLOWED":
-                return {
+                error_result = {
                     "status": "error",
                     "user_id": user_id,
                     "intent": intent,
@@ -684,6 +890,21 @@ Rules:
                     "error": compliance_result.get("reason", "Compliance check failed"),
                     "execution_log": execution_log
                 }
+                
+                # Audit the compliance failure
+                total_latency_ms = int((time.time() - overall_start_time) * 1000)
+                await self._audit_log(
+                    agent_name="process_query",
+                    caller=user_id,
+                    input_text=query,
+                    output_text=json.dumps(error_result),
+                    latency_ms=total_latency_ms,
+                    safety_result="denied",
+                    error_message=compliance_result.get("reason", "Compliance check failed"),
+                    metadata={"intent": intent, "compliance_status": compliance_status}
+                )
+                
+                return error_result
             
             # Step 3: Route to Agent
             step_start = time.time()
@@ -740,7 +961,7 @@ Rules:
             })
             
             # Return final response
-            return {
+            final_response = {
                 "status": "success",
                 "user_id": user_id,
                 "intent": intent,
@@ -753,6 +974,25 @@ Rules:
                 "execution_log": execution_log,
                 "error": None
             }
+            
+            # Audit the final successful response
+            total_latency_ms = int((time.time() - overall_start_time) * 1000)
+            self._audit_log(
+                agent_name="process_query",
+                caller=user_id,
+                input_text=query,
+                output_text=json.dumps(final_response),
+                latency_ms=total_latency_ms,
+                safety_result="allowed",
+                metadata={
+                    "intent": intent,
+                    "confidence": confidence,
+                    "agent_used": target_agent,
+                    "compliance_passed": True
+                }
+            )
+            
+            return final_response
         
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
@@ -767,7 +1007,7 @@ Rules:
                 "error_message": str(e)
             })
             
-            return {
+            error_result = {
                 "status": "error",
                 "user_id": user_id,
                 "intent": None,
@@ -776,6 +1016,20 @@ Rules:
                 "error": str(e),
                 "execution_log": execution_log
             }
+            
+            # Audit the error response
+            total_latency_ms = int((time.time() - overall_start_time) * 1000)
+            self._audit_log(
+                agent_name="process_query",
+                caller=user_id,
+                input_text=query,
+                output_text=json.dumps(error_result),
+                latency_ms=total_latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            
+            return error_result
 
 
 # ==================== ADK App Deployment (Optional) ====================
