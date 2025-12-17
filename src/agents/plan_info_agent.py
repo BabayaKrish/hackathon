@@ -929,6 +929,7 @@ Available intents:
 2. PLAN_UPGRADE - User wants to change or upgrade their plan to a higher tier
 3. PLAN_DETAILS - User wants detailed information about a specific plan
 4. CURRENT_PLAN - User wants to know their current plan details
+5. ADDITIONAL_FEATURES - User is asking about additional features, add-ons, or features they can add to their plan
 
 Extract any mentioned plan tier if present (e.g., 'Bronze', 'Silver', 'Gold', 'No Plan').
 
@@ -946,15 +947,15 @@ Rules:
         for attempt in range(self.max_retries):
             try:
                 logger.info(f"Calling Vertex AI for intent classification (attempt {attempt + 1}/{self.max_retries})")
-                
+
                 def call_vertex_ai():
                     return self.model.generate_content(prompt)
-                
+
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(call_vertex_ai)
                     try:
                         response = future.result(timeout=30.0)
-                        
+
                         # Parse response
                         response_text = response.text.strip()
                         logger.info(f"Vertex AI response: {response_text}")
@@ -964,7 +965,12 @@ Rules:
                             result = json.loads(response_text)
                         except json.JSONDecodeError as e:
                             logger.error(f"JSON parsing error in classify_plan_intent on attempt {attempt + 1}: {e}")
-                            # Try to extract JSON object from within markdown fences or extra text
+                            # Remove markdown code fences (with or without language)
+                            if response_text.startswith("```"):
+                                lines = response_text.splitlines()
+                                if len(lines) > 2 and lines[0].strip().startswith("```") and lines[-1].strip().startswith("```"):
+                                    response_text = "\n".join(lines[1:-1]).strip()
+                            response_text = response_text.strip()
                             start = response_text.find("{")
                             end = response_text.rfind("}")
                             if start != -1 and end != -1 and end > start:
@@ -975,10 +981,10 @@ Rules:
                                 raise
 
                         result["status"] = "success"
-                        
+
                         logger.info(f"Intent classified: {result.get('intent')} with confidence {result.get('confidence')}")
                         return result
-                        
+
                     except concurrent.futures.TimeoutError:
                         logger.warning(f"Vertex AI call timed out on attempt {attempt + 1}")
                         if attempt < self.max_retries - 1:
@@ -991,7 +997,7 @@ Rules:
                                 "confidence": 0.0,
                                 "error": "Vertex AI timeout after all retries"
                             }
-                            
+
             except json.JSONDecodeError as e:
                 logger.error(f"JSON parsing error: {str(e)}")
                 if attempt < self.max_retries - 1:
@@ -1071,6 +1077,16 @@ Respond in JSON format only:
                 except json.JSONDecodeError as e:
                     logger.error(f"JSON parsing error in generate_upgrade_recommendation on attempt {attempt + 1}: {e}")
                     # Try to extract JSON object from within markdown fences or extra text
+                    # Remove markdown code block if present
+                    # Remove markdown code fences (with or without language)
+                    if response_text.startswith("```"):
+                        lines = response_text.splitlines()
+                        # Remove first and last line if they are code fences (``` or ```json)
+                        if len(lines) > 2 and lines[0].strip().startswith("```") and lines[-1].strip().startswith("```"):
+                            # Remove possible language specifier (e.g., ```json)
+                            response_text = "\n".join(lines[1:-1]).strip()
+                    # Also strip leading/trailing whitespace
+                    response_text = response_text.strip()
                     start = response_text.find("{")
                     end = response_text.rfind("}")
                     if start != -1 and end != -1 and end > start:
@@ -1108,7 +1124,6 @@ Respond in JSON format only:
             Complete upgrade recommendation with options
         """
         logger.info(f"Processing plan upgrade request for user {user_id}: {user_query}")
-        
         try:
             # Step 1: Classify intent
             intent_result = self.classify_plan_intent(user_query)
@@ -1119,19 +1134,19 @@ Respond in JSON format only:
             mentioned_tier = intent_result.get("mentioned_tier")
             logger.info(f"Mentioned plan tier in classification result: {mentioned_tier}")
             intent = intent_result.get("intent", "UNKNOWN")
-            
+
             # Step 2: Get all plans for context
             all_plans = self.retrieve_all_plan_features()
-            
+
             # Step 3: If specific tier mentioned, get details
             specific_plan = None
             if mentioned_tier:
                 specific_plan = self.retrieve_specific_plan(mentioned_tier)
                 logger.info(f"Retrieved specific plan for tier: {mentioned_tier}")
-            
+
             # Step 4: Get upgrade suggestions
             upgrade_suggestions = self.get_upgrade_suggestions(mentioned_tier or "Bronze")
-            
+
             # Step 5: Generate AI recommendation
             recommendation = None
             if upgrade_suggestions.get("upgrade_options"):
@@ -1140,7 +1155,42 @@ Respond in JSON format only:
                     upgrade_suggestions["upgrade_options"],
                     user_query
                 )
-            
+
+            # Step 6: Additional features logic
+            additional_features = []
+            user_query_lower = user_query.lower()
+            logger.info(f"Checking for additional features request in user query: {user_query_lower}")
+            # If user asks for additional features or has 'No Plan', show features from 'No Plan' row if available
+            if (
+                "additional feature" in user_query_lower
+                or "additional features" in user_query_lower
+                or "add-on" in user_query_lower
+                or "can i add" in user_query_lower
+                or (mentioned_tier and str(mentioned_tier).lower() == "no plan")
+            ):
+                # Try to find 'No Plan' in all_plans
+                plans = all_plans.get("plans", [])
+                logger.info(f"Found {len(plans)} plans in all_plans additiona feature code")
+                no_plan_row = next((p for p in plans if str(p.get("tier", "")).lower() == "no plan"), None)
+                if no_plan_row and "features" in no_plan_row:
+                    additional_features = no_plan_row["features"]
+                else:
+                    # Fallback: show all features from all plans as additional
+                    all_features = set()
+                    for p in plans:
+                        feats = p.get("features", [])
+                        if isinstance(feats, list):
+                            all_features.update(feats)
+                        elif isinstance(feats, str):
+                            # If features is a stringified list
+                            try:
+                                feats_list = json.loads(feats)
+                                if isinstance(feats_list, list):
+                                    all_features.update(feats_list)
+                            except Exception:
+                                pass
+                    additional_features = list(all_features)
+
             # Compile final response
             response = {
                 "status": "success",
@@ -1152,19 +1202,21 @@ Respond in JSON format only:
                 "current_plan_details": specific_plan,
                 "upgrade_options": upgrade_suggestions.get("upgrade_options", []),
                 "ai_recommendation": recommendation,
-                "next_actions": ["show_comparison_table", "show_upgrade_prompt"]
+                "next_actions": ["show_comparison_table", "show_upgrade_prompt"],
+                "additional_features": additional_features,
             }
-            
+
             logger.info(f"Successfully processed upgrade request for user {user_id}")
+            logger.info(f"Response for the plan object: {response}")
             return response
-            
+
         except Exception as e:
             logger.error(f"Error in process_plan_upgrade_request: {str(e)}")
             return {
                 "status": "error",
                 "error": str(e),
                 "user_id": user_id
-            }   
+            }
 
 # ==================== Exports ====================
 

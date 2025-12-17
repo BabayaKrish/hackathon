@@ -216,29 +216,93 @@ class RootAgent:
 
         start_time = time.time()
 
-        # Define valid intents to match our enum
+        # Define valid intents to match our enum (including OUT_OF_SCOPE)
         REPORT_TYPES = ["balance_report", "wire_details", "intraday_balance", "running_ledger"]
-        valid_intents = REPORT_TYPES + ["PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK"]
-        prompt = f"""You are a financial services intent classifier. Analyze the following customer query and determine their intent.
+        valid_intents = REPORT_TYPES + ["PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK", "OUT_OF_SCOPE"]
+        # Use a regular triple-quoted string and .format(query=query) to safely inject the query.
+        improved_prompt =  """You are a STRICT financial services intent classifier for a banking/financial services platform.
 
-Query: {query}
+YOUR SOLE JOB: Classify customer queries into ONE of these 7 financial intents ONLY.
+DO NOT answer questions. DO NOT provide information. DO NOT engage in conversation.
+DO NOT hallucinate or make assumptions.
 
-Available intents:
-1. balance_report - User wants to view or download a balance report
-2. wire_details - User wants to view or download wire transfer details
-3. intraday_balance - User wants to view real-time balance
-4. running_ledger - User wants to view the complete transaction log
-5. PLAN_UPGRADE - User wants to change or upgrade their plan to a higher tier
-6. PLAN_INFO - User is asking for information about plans, features, pricing, or comparisons
-7. BALANCE_CHECK - User wants to know their current account balance or recent transactions
+**CRITICAL RULE**: If a query does NOT match ANY of the 7 intents below, you MUST respond with:
+{{"intent": "OUT_OF_SCOPE", "confidence": 1.0, "reasoning": "Query is not related to financial services or account management"}}
 
-Respond ONLY in valid JSON format with no additional text:
-{{"intent": "balance_report|wire_details|intraday_balance|running_ledger|PLAN_UPGRADE|PLAN_INFO|BALANCE_CHECK", "confidence": 0.0-1.0, "reasoning": "Brief explanation"}}
+**AVAILABLE INTENTS** (ONLY these 7 + OUT_OF_SCOPE):
 
-Rules:
-- Confidence must be between 0 and 1
-- If unclear or ambiguous, set confidence to 0.6-0.8
-- Return valid JSON only, no markdown or explanations"""
+1. BALANCE_CHECK - User wants to know their CURRENT ACCOUNT BALANCE or RECENT TRANSACTIONS
+    Examples: "What is my balance?", "Show me recent transactions", "How much do I have?"
+   
+2. BALANCE_REPORT - User wants to VIEW or DOWNLOAD a complete BALANCE REPORT/STATEMENT
+    Examples: "Download my statement", "Show me a balance report", "I need a monthly report"
+   
+3. INTRADAY_BALANCE - User wants to view REAL-TIME or CURRENT-MOMENT balance updates
+    Examples: "What's my balance right now?", "Real-time balance", "Current balance update"
+   
+4. RUNNING_LEDGER - User wants to view the COMPLETE TRANSACTION LOG or DETAILED LEDGER
+    Examples: "Show me all transactions", "Display the full ledger", "Transaction history"
+   
+5. WIRE_DETAILS - User wants to VIEW or DOWNLOAD WIRE TRANSFER details/instructions
+    Examples: "Show wire transfer details", "How do I send a wire?", "Wire instructions"
+   
+6. PLAN_INFO - User is asking SPECIFICALLY about PLANS, FEATURES, PRICING, or PLAN COMPARISONS
+    ONLY for: plan features, pricing details, plan comparison, upgrade options
+    DO NOT classify general questions here
+    Examples: "What features does the gold plan have?", "How much is the premium plan?", "Compare plans"
+   
+7. PLAN_UPGRADE - User explicitly wants to CHANGE their PLAN TIER (UPGRADE or DOWNGRADE)
+   UPGRADE: Switching to a HIGHER-COST or MORE-FEATURED plan
+   DOWNGRADE: Switching to a LOWER-COST or LESS-FEATURED plan
+   Examples: "Upgrade my plan", "Switch to premium", "I want a higher tier", "Downgrade to silver", "Switch to basic plan", "I want a cheaper plan"
+
+8. OUT_OF_SCOPE - Query is NOT related to financial services (STRICT DEFAULT for anything else)
+    Examples: "What is your name?", "What is AI?", "Hello", "Who are you?", "Tell me a joke"
+
+**REJECTION EXAMPLES** (Do NOT classify these as PLAN_INFO):
+- "What is your name?" → OUT_OF_SCOPE (greeting/personal question)
+- "What is AI?" → OUT_OF_SCOPE (general knowledge question)
+- "Who are you?" → OUT_OF_SCOPE (identity question)
+- "Can you help me?" → OUT_OF_SCOPE (vague/non-financial)
+- "Hello" → OUT_OF_SCOPE (greeting)
+- "Tell me about pricing" (without mention of plans) → OUT_OF_SCOPE
+- "How does banking work?" → OUT_OF_SCOPE (educational, not account-specific)
+
+**CONFIDENCE SCORING RULES**:
+- 0.95-1.0: Clear, unambiguous financial query matching one intent
+- 0.85-0.94: Strong match with minor ambiguity
+- 0.75-0.84: Reasonable match but some ambiguity
+- 0.65-0.74: Weak match, consider OUT_OF_SCOPE instead
+- Below 0.65: MUST use OUT_OF_SCOPE instead
+
+**OUTPUT FORMAT** (STRICT):
+Return ONLY valid JSON with NO markdown fences, NO explanations, NO additional text:
+{{"intent": "BALANCE_CHECK|BALANCE_REPORT|INTRADAY_BALANCE|RUNNING_LEDGER|WIRE_DETAILS|PLAN_INFO|PLAN_UPGRADE|OUT_OF_SCOPE", "confidence": 0.0-1.0, "reasoning": "Brief 3-sentence explanation"}}
+
+**VALIDATION RULES**:
+1. Confidence must be a number between 0.0 and 1.0
+2. Intent must be ONE of the 8 options above
+3. Reasoning must be 1-2 sentences maximum
+4. Return ONLY JSON - no markdown, no code fences, no text
+5. If unclear, default to OUT_OF_SCOPE with confidence 0.85-1.0
+
+**WHEN TO USE OUT_OF_SCOPE** (Use liberally):
+✓ Greeting/personal questions
+✓ General knowledge questions
+✓ Requests for information not in the 7 intents
+✓ Vague or ambiguous queries
+✓ Philosophical or conversational questions
+✓ Anything that feels like "general chitchat"
+
+Do NOT try to be helpful by answering beyond your scope. 
+Do NOT assume intent from ambiguous queries.
+Do NOT extend PLAN_INFO to cover general questions.
+Respond STRICTLY per these rules.
+CLASSIFY THE FOLLOWING QUERY:
+Query: {query}  
+Respond ONLY in valid JSON format and reasoning about the selection of intent."""
+        
+        prompt = improved_prompt.format(query=query)    
         
         max_retries = 3
         base_delay = 1.0  # seconds
@@ -249,7 +313,7 @@ Rules:
         for attempt in range(max_retries):
             try:
                 logger.info(f"Sending prompt to Vertex AI (attempt {attempt + 1}/{max_retries}, length: {len(prompt)} chars)")
-                
+                logger.info(f"Prompt content: {prompt}")
                 # Add timeout to prevent hanging
                 def call_vertex_ai():
                     return self.model.generate_content(prompt)
@@ -257,7 +321,8 @@ Rules:
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(call_vertex_ai)
                     try:
-                        response = future.result(timeout=30.0)  # 30 second timeout
+                        response = future.result(timeout=30.0) 
+                        logger.info(f"Received response from Vertex AI as response: {response}")
                     except concurrent.futures.TimeoutError:
                         logger.warning(f"Vertex AI call timed out on attempt {attempt + 1}")
                         if attempt < max_retries - 1:
@@ -300,6 +365,7 @@ Rules:
                 # PARSE CLEANED TEXT
                 result = json.loads(response_text)
                 intent_value = result.get("intent", "UNKNOWN")
+                intent_value = intent_value.lower()  # Normalize to lowercase
                 confidence = float(result.get("confidence", 0.0))
                 reasoning = result.get("reasoning", "")
                 
@@ -1122,6 +1188,41 @@ Rules:
                 "duration_ms": (time.time() - step_start) * 1000
             })
             logger.info(f"Intent: {intent} (confidence: {confidence})")
+
+            # If the query is out of scope, return a friendly message immediately
+            if intent == "OUT_OF_SCOPE":
+                reasoning = intent_result.get("reasoning", "This question is outside the scope of this assistant.")
+                out_of_scope_response = {
+                    "status": "success",
+                    "user_id": user_id,
+                    "intent": intent,
+                    "confidence": confidence,
+                    "compliance_passed": False,
+                    "agent_used": None,
+                    "data": {},
+                    "next_actions": [],
+                    "reasoning": reasoning,
+                    "execution_log": execution_log,
+                    "error": None
+                }
+
+                total_latency_ms = int((time.time() - overall_start_time) * 1000)
+                await self._audit_log(
+                    agent_name="process_query",
+                    caller=user_id,
+                    input_text=query,
+                    output_text=json.dumps(out_of_scope_response),
+                    latency_ms=total_latency_ms,
+                    safety_result="allowed",
+                    metadata={
+                        "intent": intent,
+                        "confidence": confidence,
+                        "agent_used": None,
+                        "compliance_passed": False
+                    }
+                )
+
+                return out_of_scope_response
             
             # Step 2: Check Compliance
             step_start = time.time()
