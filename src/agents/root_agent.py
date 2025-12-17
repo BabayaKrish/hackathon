@@ -468,16 +468,6 @@ Rules:
             allowed_intents = access_matrix.get(plan_tier.lower() if plan_tier else "", [])
             intent_allowed = intent in allowed_intents
             
-            # Define access matrix
-            access_matrix = {
-                "gold": ["REPORT_REQUEST", "PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK"],
-                "silver": ["REPORT_REQUEST", "PLAN_INFO", "BALANCE_CHECK"],
-                "bronze": ["BALANCE_CHECK", "PLAN_INFO"]
-            }
-            
-            allowed_intents = access_matrix.get(plan_tier.lower(), [])
-            intent_allowed = intent in allowed_intents
-            
             # Check KYC requirements for sensitive operations
             if intent == "REPORT_REQUEST" and not kyc_verified:
                 output = json.dumps({

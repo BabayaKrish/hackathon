@@ -214,39 +214,35 @@ class PlanInfoAgent:
         Returns:
             Dictionary with all plan features
         """
-        logger.info("Retrieving all plan features")
-        start_time = time.time()
-        input_text = "{}"
-        caller = "anonymous_user"
-        
+        logger.info("Retrieving plan features")
+
         try:
-            output = {
+            query = f"""
+                          SELECT 
+                              plan_name,
+                              tier,
+                              monthly_price,
+                              annual_price,
+                              features,
+                          FROM `{self.project_id}.client_data.plan_offerings`
+                          ORDER BY monthly_price
+                      """
+
+            results = self.bq_client.query(query).result()
+            plans = [dict(row) for row in results]
+
+            return {
                 "status": "success",
-                "plans": self.plans,
-                "total_plans": len(self.plans),
-                "timestamp": datetime.utcnow().isoformat()
+                "plans": plans,
+                "total_plans": len(plans)
             }
-            latency_ms = (time.time() - start_time) * 1000
-            await self._audit_log("plan_info_agent.retrieve_plan_features", caller, input_text, json.dumps(output), latency_ms)
-            return output
         except Exception as e:
-            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Feature retrieval error: {str(e)}")
-            error_output = {
+            return {
                 "status": "error",
-                "error": str(e)
+                "error": str(e),
+                "plans": []
             }
-            await self._audit_log(
-                "plan_info_agent.retrieve_plan_features",
-                caller,
-                input_text,
-                json.dumps(error_output),
-                latency_ms,
-                safety_result="error",
-                error_message=str(e)
-            )
-            return error_output
-    
     async def get_pricing(self) -> Dict[str, Any]:
         """
         TOOL 2: Get pricing information
@@ -264,7 +260,7 @@ class PlanInfoAgent:
             for plan_name, plan_details in self.plans.items():
                 annual_savings = (plan_details["price_monthly"] * 12) - plan_details["price_annual"]
                 discount_pct = (annual_savings / (plan_details["price_monthly"] * 12)) * 100
-                
+
                 pricing_data[plan_name] = {
                     "monthly": plan_details["price_monthly"],
                     "annual": plan_details["price_annual"],
@@ -273,7 +269,7 @@ class PlanInfoAgent:
                     "cost_per_transaction_monthly": plan_details["price_monthly"] / 500,  # Approx
                     "currency": "USD"
                 }
-            
+
             output = {
                 "status": "success",
                 "pricing": pricing_data,

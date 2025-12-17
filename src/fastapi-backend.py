@@ -420,18 +420,20 @@ async def analyze_plan(request: PlanRequest):
         logger.error(f"Plan analysis error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/plans", tags=["Plan Agent"])
 async def get_plans():
     """
     Get all available plans with details
-    
+
     Returns: List of all plan tiers with features and pricing
     """
     logger.info("Retrieving plan features in get plans api")
     if not plan_info_agent:
         raise HTTPException(status_code=503, detail="Plan Info Agent unavailable")
     try:
-        result = plan_info_agent.retrieve_plan_features()
+        result = await plan_info_agent.retrieve_plan_features()
+        logger.info(f"Plan features retrieved: {result}")
         if result.get("status") != "success":
             raise Exception(result.get("error", "Unknown error retrieving plan features"))
         # Transform the plans to the UI-friendly format
@@ -464,6 +466,7 @@ async def get_plans():
     except Exception as e:
         logger.error(f"Plan feature retrieval error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # ==================== Plan Info Agent Endpoints ====================
 
