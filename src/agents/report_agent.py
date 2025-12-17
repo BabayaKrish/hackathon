@@ -112,7 +112,7 @@ class ReportAgent:
             """,
             "wire_details": f"""
                 SELECT 
-                    wire_id,
+                    report_id,
                     user_id,
                     wire_amount,
                     destination_bank,
@@ -191,6 +191,24 @@ class ReportAgent:
                 "data": []
             }
     
+    def aggregate_wire_report_by_status(self, raw_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Aggregate wire reports by status for visualization"""
+        status_aggregates = {}
+        status_amounts = {}
+        
+        for record in raw_data:
+            status = record.get('status', 'unknown').lower()
+            amount = float(record.get('wire_amount', 0))
+            status_aggregates[status] = status_aggregates.get(status, 0) + 1
+            status_amounts[status] = status_amounts.get(status, 0) + amount
+        
+        return {
+            "status_counts": status_aggregates,
+            "status_amounts": status_amounts,
+            "total_reports": len(raw_data),
+            "total_amount": sum(status_amounts.values())
+        }
+
     def get_report_template(self, report_type: str) -> Dict[str, Any]:
         """
         TOOL 2: Retrieve report schema/template structure
@@ -222,7 +240,7 @@ class ReportAgent:
                 "title": "Wire Transfer Details",
                 "description": "Complete wire transfer history with status tracking",
                 "columns": [
-                    "wire_id", "wire_amount", "destination_bank",
+                    "report_id", "wire_amount", "destination_bank",
                     "destination_account", "status", "wire_date",
                     "reference_number", "beneficiary_name"
                 ],
@@ -275,8 +293,30 @@ class ReportAgent:
         logger.info(f"Formatting {report_type} as {format_type}")
         
         try:
+            # Convert Decimal to float for all records
+            def convert_decimals(obj):
+                if isinstance(obj, list):
+                    return [convert_decimals(item) for item in obj]
+                elif isinstance(obj, dict):
+                    return {k: convert_decimals(v) for k, v in obj.items()}
+                elif hasattr(obj, '__decimal__') or str(type(obj)).endswith("'decimal.Decimal'>"):
+                    return float(obj)
+                elif str(type(obj)).endswith("'Decimal'>"):
+                    return float(obj)
+                elif type(obj).__name__ == 'Decimal':
+                    return float(obj)
+                else:
+                    try:
+                        import decimal
+                        if isinstance(obj, decimal.Decimal):
+                            return float(obj)
+                    except Exception:
+                        pass
+                    return obj
+
             if format_type == "json":
-                formatted_data = json.dumps(raw_data, indent=2)
+                safe_data = convert_decimals(raw_data)
+                formatted_data = json.dumps(safe_data, indent=2)
                 file_extension = "json"
             elif format_type == "csv":
                 # Simple CSV conversion
@@ -374,35 +414,29 @@ class ReportAgent:
         try:
             query = f"""
                 SELECT 
-                    p.plan_tier,
-                    p.kyc_verified,
-                    r.feature as allowed_feature
-                FROM `{self.project_id}.client_data.client_profiles` p
-                LEFT JOIN `{self.project_id}.client_data.compliance_rules` r
-                    ON p.plan_tier = r.tier
-                WHERE p.user_id = @user_id
+                    plan_tier,
+                    kyc_verified
+                FROM `{self.project_id}.client_data.client_profiles`
+                WHERE user_id = @user_id
             """
-            
             job_config = bigquery.QueryJobConfig(
                 query_parameters=[
                     bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
                 ]
             )
-            
             results = list(self.bq_client.query(query, job_config=job_config).result())
-            
+            logger.info(f"Access query results: {results}")
             if not results:
                 return {
                     "status": "error",
                     "access_granted": False,
                     "reason": "User not found"
                 }
-            
             user_data = results[0]
             plan_tier = user_data.plan_tier
             kyc_verified = user_data.kyc_verified
-            
             # Check if wire reports require KYC
+            logger.info(f"KYC verification status for user {user_id}: {kyc_verified}")
             requires_kyc = report_type in ["wire_details", "check_images"]
             if requires_kyc and not kyc_verified:
                 return {
@@ -412,7 +446,6 @@ class ReportAgent:
                     "plan_tier": plan_tier,
                     "kyc_verified": False
                 }
-            
             # Check plan tier access
             plan_access = {
                 "gold": ["balance_report", "wire_details", "ach_inbound", 
@@ -422,10 +455,9 @@ class ReportAgent:
                           "running_ledger"],
                 "bronze": ["balance_report", "intraday_balance"]
             }
-            
+            logger.info(f"Plan access for user {user_id}: {plan_access}")
             allowed_reports = plan_access.get(plan_tier.lower(), [])
             access_granted = report_type in allowed_reports
-            
             return {
                 "status": "success",
                 "access_granted": access_granted,
@@ -466,6 +498,7 @@ class ReportAgent:
         try:
             # Step 1: Validate access
             access_result = self.validate_access(user_id, report_type)
+            logger.info(f"Access validation result: {access_result}")
             execution_log.append({
                 "step": "validate_access",
                 "status": access_result.get("status"),
@@ -473,6 +506,7 @@ class ReportAgent:
             })
             
             if not access_result.get("access_granted"):
+                logger.warning(f"Access denied for user {user_id} to {report_type}")
                 return {
                     "status": "error",
                     "error": access_result.get("reason", "Access denied"),
@@ -481,6 +515,7 @@ class ReportAgent:
             
             # Step 2: Query data
             query_result = self.query_bigquery(user_id, report_type)
+            logger.info(f"Query result for user {user_id}, report {report_type}: {query_result}")   
             execution_log.append({
                 "step": "query_bigquery",
                 "status": query_result.get("status"),
