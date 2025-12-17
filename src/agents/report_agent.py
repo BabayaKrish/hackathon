@@ -7,10 +7,23 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 import time
 from enum import Enum
-
-from google.cloud import bigquery
+from common_tools.AuditTool import async_log_event
 import vertexai
-from vertexai.generative_models import GenerativeModel
+
+try:
+    from google.cloud import bigquery
+except Exception:
+    bigquery = None
+
+try:
+    import vertexai
+    from vertexai.generative_models import GenerativeModel
+except Exception:
+    vertexai = None
+
+    class GenerativeModel:
+        def __init__(self, *args, **kwargs):
+            pass
 
 # ==================== Configuration & Types ====================
 
@@ -79,8 +92,42 @@ class ReportAgent:
         self.model = GenerativeModel("gemini-2.0-flash-exp")
         
         logger.info(f"ReportAgent initialized for project {project_id}")
-    
-    def query_bigquery(self, user_id: str, report_type: str) -> Dict[str, Any]:
+
+    async def _audit_log(
+        self,
+        agent_name: str,
+        caller: str,
+        input_text: str,
+        output_text: str,
+        latency_ms: float,
+        safety_result: str = "allowed",
+        error_message: Optional[str] = None,
+        metadata: Optional[Dict] = None
+    ):
+        """
+        Log event to audit trail using AuditTool.
+        """
+        if async_log_event is None:
+            logger.debug("AuditTool not available, skipping audit logging")
+            return
+
+        try:
+            result = await async_log_event(
+                agent_name=agent_name,
+                model_name="gemini-2.0-flash-exp",
+                caller=caller,
+                input_text=input_text,
+                output_text=output_text,
+                latency_ms=latency_ms,
+                safety_result=safety_result,
+                error_message=error_message,
+                metadata=metadata
+            )
+            logger.info(f"Audit logged: {result}")
+        except Exception as e:
+            logger.error(f"Failed to log audit event: {str(e)}")
+
+    async def query_bigquery(self, user_id: str, report_type: str) -> Dict[str, Any]:
         """
         TOOL 1: Execute BigQuery queries to fetch raw financial data
         
@@ -92,7 +139,9 @@ class ReportAgent:
             Dictionary with raw query results and metadata
         """
         logger.info(f"Querying BigQuery for {report_type} report for user {user_id}")
-        
+        start_time = time.time()
+        input_text = json.dumps({"user_id": user_id, "report_type": report_type})
+
         queries = {
             "balance_report": f"""
                 SELECT 
@@ -176,32 +225,38 @@ class ReportAgent:
                     if hasattr(value, 'isoformat'):
                         record[key] = value.isoformat()
             
-            return {
+            output = {
                 "status": "success",
                 "report_type": report_type,
                 "row_count": len(data),
                 "data": data,
                 "query_timestamp": datetime.utcnow().isoformat()
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log("report_agent.query_bigquery", user_id, input_text, json.dumps(output), latency_ms, metadata={"user_id": user_id, "report_type": report_type})
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"BigQuery error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e),
                 "data": []
             }
-    
+            await self._audit_log("report_agent.query_bigquery", user_id, input_text, json.dumps(error_output), latency_ms, safety_result="error", error_message=str(e), metadata={"user_id": user_id, "report_type": report_type})
+            return error_output
+
     def aggregate_wire_report_by_status(self, raw_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Aggregate wire reports by status for visualization"""
         status_aggregates = {}
         status_amounts = {}
-        
+
         for record in raw_data:
             status = record.get('status', 'unknown').lower()
             amount = float(record.get('wire_amount', 0))
             status_aggregates[status] = status_aggregates.get(status, 0) + 1
             status_amounts[status] = status_amounts.get(status, 0) + amount
-        
+
         return {
             "status_counts": status_aggregates,
             "status_amounts": status_amounts,
@@ -209,7 +264,7 @@ class ReportAgent:
             "total_amount": sum(status_amounts.values())
         }
 
-    def get_report_template(self, report_type: str) -> Dict[str, Any]:
+    async def get_report_template(self, report_type: str) -> Dict[str, Any]:
         """
         TOOL 2: Retrieve report schema/template structure
         
@@ -220,7 +275,10 @@ class ReportAgent:
             Dictionary defining report structure, columns, calculations
         """
         logger.info(f"Retrieving template for {report_type}")
-        
+        start_time = time.time()
+        input_text = json.dumps({"report_type": report_type})
+        caller = "system"
+
         templates = {
             "balance_report": {
                 "title": "Account Balance Report",
@@ -266,14 +324,18 @@ class ReportAgent:
             }
         }
         
-        return templates.get(report_type, {
+        output = templates.get(report_type, {
             "title": "Financial Report",
             "description": "Standard financial data report",
             "columns": [],
             "summary_metrics": []
         })
-    
-    def format_data(
+
+        latency_ms = (time.time() - start_time) * 1000
+        await self._audit_log("report_agent.get_report_template", caller, input_text, json.dumps(output), latency_ms, metadata={"report_type": report_type})
+        return output
+
+    async def format_data(
         self, 
         raw_data: List[Dict[str, Any]], 
         format_type: str,
@@ -291,7 +353,10 @@ class ReportAgent:
             Dictionary with formatted data and download info
         """
         logger.info(f"Formatting {report_type} as {format_type}")
-        
+        start_time = time.time()
+        input_text = json.dumps({"format_type": format_type, "report_type": report_type, "data_length": len(raw_data)})
+        caller = "system"
+
         try:
             # Convert Decimal to float for all records
             def convert_decimals(obj):
@@ -341,7 +406,7 @@ class ReportAgent:
                 formatted_data = raw_data
                 file_extension = "json"
             
-            return {
+            output = {
                 "status": "success",
                 "format": format_type,
                 "file_name": f"{report_type}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.{file_extension}",
@@ -349,14 +414,22 @@ class ReportAgent:
                 "size_bytes": len(str(formatted_data)),
                 "ready_for_download": True
             }
+            latency_ms = (time.time() - start_time) * 1000
+            # Note: Do not log the full 'data' field to avoid excessive audit log size.
+            logged_output = {k: v for k, v in output.items() if k != "data"}
+            await self._audit_log("report_agent.format_data", caller, input_text, json.dumps(logged_output), latency_ms, metadata={"report_type": report_type, "format_type": format_type})
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Formatting error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
-    
-    def generate_visualization(
+            await self._audit_log("report_agent.format_data", caller, input_text, json.dumps(error_output), latency_ms, safety_result="error", error_message=str(e), metadata={"report_type": report_type, "format_type": format_type})
+            return error_output
+
+    async def generate_visualization(
         self,
         raw_data: List[Dict[str, Any]],
         report_type: str,
@@ -374,7 +447,10 @@ class ReportAgent:
             Dictionary with chart data and metadata
         """
         logger.info(f"Generating {chart_type} visualization for {report_type}")
-        
+        start_time = time.time()
+        input_text = json.dumps({"report_type": report_type, "chart_type": chart_type, "data_length": len(raw_data)})
+        caller = "system"
+
         try:
             visualization_data = {
                 "status": "success",
@@ -389,16 +465,20 @@ class ReportAgent:
                     "data_quality": "verified"
                 }
             }
-            
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log("report_agent.generate_visualization", caller, input_text, json.dumps(visualization_data), latency_ms, metadata={"report_type": report_type, "chart_type": chart_type})
             return visualization_data
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Visualization error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e)
             }
-    
-    def validate_access(self, user_id: str, report_type: str) -> Dict[str, Any]:
+            await self._audit_log("report_agent.generate_visualization", caller, input_text, json.dumps(error_output), latency_ms, safety_result="error", error_message=str(e), metadata={"report_type": report_type, "chart_type": chart_type})
+            return error_output
+
+    async def validate_access(self, user_id: str, report_type: str) -> Dict[str, Any]:
         """
         TOOL 5: Validate user access entitlements
         
@@ -410,42 +490,57 @@ class ReportAgent:
             Dictionary with access validation results
         """
         logger.info(f"Validating access for user {user_id} to {report_type}")
-        
+        start_time = time.time()
+        input_text = json.dumps({"user_id": user_id, "report_type": report_type})
+
         try:
             query = f"""
                 SELECT 
-                    plan_tier,
-                    kyc_verified
-                FROM `{self.project_id}.client_data.client_profiles`
-                WHERE user_id = @user_id
+                    p.plan_tier,
+                    p.kyc_verified,
+                    r.feature as allowed_feature
+                FROM `{self.project_id}.client_data.client_profiles` p
+                LEFT JOIN `{self.project_id}.client_data.compliance_rules` r
+                    ON p.plan_tier = r.tier
+                WHERE p.user_id = @user_id
             """
+            
             job_config = bigquery.QueryJobConfig(
                 query_parameters=[
                     bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
                 ]
             )
+            
             results = list(self.bq_client.query(query, job_config=job_config).result())
-            logger.info(f"Access query results: {results}")
+            
             if not results:
-                return {
+                output = {
                     "status": "error",
                     "access_granted": False,
                     "reason": "User not found"
                 }
+                latency_ms = (time.time() - start_time) * 1000
+                await self._audit_log("report_agent.validate_access", user_id, input_text, json.dumps(output), latency_ms, safety_result="denied", error_message="User not found", metadata={"user_id": user_id, "report_type": report_type})
+                return output
+
             user_data = results[0]
             plan_tier = user_data.plan_tier
             kyc_verified = user_data.kyc_verified
+            
             # Check if wire reports require KYC
-            logger.info(f"KYC verification status for user {user_id}: {kyc_verified}")
             requires_kyc = report_type in ["wire_details", "check_images"]
             if requires_kyc and not kyc_verified:
-                return {
+                output = {
                     "status": "success",
                     "access_granted": False,
                     "reason": f"KYC verification required for {report_type}",
                     "plan_tier": plan_tier,
                     "kyc_verified": False
                 }
+                latency_ms = (time.time() - start_time) * 1000
+                await self._audit_log("report_agent.validate_access", user_id, input_text, json.dumps(output), latency_ms, safety_result="denied", metadata={"user_id": user_id, "report_type": report_type})
+                return output
+
             # Check plan tier access
             plan_access = {
                 "gold": ["balance_report", "wire_details", "ach_inbound", 
@@ -455,24 +550,31 @@ class ReportAgent:
                           "running_ledger"],
                 "bronze": ["balance_report", "intraday_balance"]
             }
-            logger.info(f"Plan access for user {user_id}: {plan_access}")
+            
             allowed_reports = plan_access.get(plan_tier.lower(), [])
             access_granted = report_type in allowed_reports
-            return {
+            
+            output = {
                 "status": "success",
                 "access_granted": access_granted,
                 "plan_tier": plan_tier,
                 "kyc_verified": kyc_verified,
                 "available_reports": allowed_reports
             }
+            latency_ms = (time.time() - start_time) * 1000
+            await self._audit_log("report_agent.validate_access", user_id, input_text, json.dumps(output), latency_ms, safety_result="allowed" if access_granted else "denied", metadata={"user_id": user_id, "report_type": report_type})
+            return output
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Access validation error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "access_granted": False,
                 "error": str(e)
             }
-    
+            await self._audit_log("report_agent.validate_access", user_id, input_text, json.dumps(error_output), latency_ms, safety_result="error", error_message=str(e), metadata={"user_id": user_id, "report_type": report_type})
+            return error_output
+
     async def process_report_request(
         self,
         user_id: str,
@@ -494,11 +596,11 @@ class ReportAgent:
         
         execution_log = []
         start_time = time.time()
-        
+        input_text = json.dumps({"user_id": user_id, "report_type": report_type, "format_type": format_type})
+
         try:
             # Step 1: Validate access
-            access_result = self.validate_access(user_id, report_type)
-            logger.info(f"Access validation result: {access_result}")
+            access_result = await self.validate_access(user_id, report_type)
             execution_log.append({
                 "step": "validate_access",
                 "status": access_result.get("status"),
@@ -506,16 +608,17 @@ class ReportAgent:
             })
             
             if not access_result.get("access_granted"):
-                logger.warning(f"Access denied for user {user_id} to {report_type}")
-                return {
+                error_output = {
                     "status": "error",
                     "error": access_result.get("reason", "Access denied"),
                     "execution_log": execution_log
                 }
-            
+                latency_ms = (time.time() - start_time) * 1000
+                await self._audit_log("report_agent.process_report_request", user_id, input_text, json.dumps(error_output), latency_ms, safety_result="denied", error_message=error_output["error"], metadata={"user_id": user_id, "report_type": report_type})
+                return error_output
+
             # Step 2: Query data
-            query_result = self.query_bigquery(user_id, report_type)
-            logger.info(f"Query result for user {user_id}, report {report_type}: {query_result}")   
+            query_result = await self.query_bigquery(user_id, report_type)
             execution_log.append({
                 "step": "query_bigquery",
                 "status": query_result.get("status"),
@@ -525,14 +628,14 @@ class ReportAgent:
             raw_data = query_result.get("data", [])
             
             # Step 3: Get template
-            template = self.get_report_template(report_type)
+            template = await self.get_report_template(report_type)
             execution_log.append({
                 "step": "get_report_template",
                 "status": "success"
             })
             
             # Step 4: Format data
-            format_result = self.format_data(raw_data, format_type, report_type)
+            format_result = await self.format_data(raw_data, format_type, report_type)
             execution_log.append({
                 "step": "format_data",
                 "status": format_result.get("status"),
@@ -540,7 +643,7 @@ class ReportAgent:
             })
             
             # Step 5: Generate visualization
-            viz_result = self.generate_visualization(raw_data, report_type)
+            viz_result = await self.generate_visualization(raw_data, report_type)
             execution_log.append({
                 "step": "generate_visualization",
                 "status": viz_result.get("status"),
@@ -549,7 +652,7 @@ class ReportAgent:
             
             elapsed_time = (time.time() - start_time) * 1000
             
-            return {
+            output = {
                 "status": "success",
                 "report_type": report_type,
                 "format": format_type,
@@ -569,16 +672,107 @@ class ReportAgent:
                 "execution_log": execution_log,
                 "total_execution_time_ms": elapsed_time
             }
-        
+            logged_output = {k: v for k, v in output.items() if k != "report_data"}
+            await self._audit_log("report_agent.process_report_request", user_id, input_text, json.dumps(logged_output), elapsed_time, metadata={"user_id": user_id, "report_type": report_type})
+            return output
+
         except Exception as e:
+            elapsed_time = (time.time() - start_time) * 1000
             logger.error(f"Report processing error: {str(e)}")
-            return {
+            error_output = {
                 "status": "error",
                 "error": str(e),
                 "execution_log": execution_log
             }
+            await self._audit_log("report_agent.process_report_request", user_id, input_text, json.dumps(error_output), elapsed_time, safety_result="error", error_message=str(e), metadata={"user_id": user_id, "report_type": report_type})
+            return error_output
 
 
 # ==================== Exports ====================
 
 __all__ = ['ReportAgent', 'ReportType', 'ReportFormat']
+
+
+# ==================== Eval / Testcases ====================
+class MockReportAgent(ReportAgent):
+    """Mock ReportAgent for local evals without external services."""
+    def __init__(self):
+        # don't initialize BigQuery or Vertex clients
+        self.project_id = "mock_project"
+        self.region = "local"
+
+    def validate_access(self, user_id: str, report_type: str) -> Dict[str, Any]:
+        # simulate access rules; 'user_denied' has no access
+        if user_id == "user_denied":
+            return {"status": "success", "access_granted": False, "reason": "Plan restrictions"}
+
+        return {"status": "success", "access_granted": True, "plan_tier": "gold", "kyc_verified": True}
+
+    def query_bigquery(self, user_id: str, report_type: str) -> Dict[str, Any]:
+        # return mocked rows depending on report_type
+        now = datetime.utcnow().isoformat()
+        if report_type == "balance_report":
+            data = [
+                {
+                    "user_id": user_id,
+                    "account_id": "acc-1",
+                    "balance_date": now,
+                    "opening_balance": 1000.0,
+                    "closing_balance": 1200.0,
+                    "total_debits": 300.0,
+                    "total_credits": 500.0,
+                    "average_daily_balance": 1100.0
+                }
+            ]
+        elif report_type == "wire_details":
+            data = [
+                {
+                    "wire_id": "w-1",
+                    "user_id": user_id,
+                    "wire_amount": 2500.0,
+                    "destination_bank": "Mock Bank",
+                    "destination_account": "dest-acc",
+                    "status": "completed",
+                    "wire_date": now,
+                    "reference_number": "ref-123",
+                    "beneficiary_name": "Beneficiary"
+                }
+            ]
+        else:
+            data = [{"user_id": user_id, "note": f"mock data for {report_type}"}]
+
+        return {
+            "status": "success",
+            "report_type": report_type,
+            "row_count": len(data),
+            "data": data,
+            "query_timestamp": now
+        }
+
+
+async def run_eval_cases() -> None:
+    agent = MockReportAgent()
+
+    cases = [
+        ("user_ok", "balance_report", "json"),
+        ("user_ok", "wire_details", "csv"),
+        ("user_denied", "balance_report", "json")
+    ]
+
+    for user_id, rpt_type, fmt in cases:
+        print(f"\n--- Eval: user={user_id} report={rpt_type} format={fmt} ---")
+        result = await agent.process_report_request(user_id, rpt_type, fmt)
+        print(f"status: {result.get('status')}")
+        if result.get("status") == "success":
+            print(f"rows: {result.get('summary', {}).get('total_records')}")
+            print(f"file_name: {result.get('summary', {}).get('file_name')}")
+        else:
+            print(f"error: {result.get('error')}")
+
+
+if __name__ == "__main__":
+    import asyncio as _asyncio
+    try:
+        _asyncio.run(run_eval_cases())
+    except Exception as e:
+        print(f"Eval run failed: {e}")
