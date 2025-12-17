@@ -6,6 +6,7 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import time
+import concurrent.futures
 
 from google.cloud import bigquery
 from common_tools.AuditTool import async_log_event
@@ -45,12 +46,30 @@ class PlanInfoAgent:
     4. Upgrade paths and transitions
     5. Frequently asked questions"
     """
+
+    def _convert_decimal(self, obj):
+        """
+        Recursively convert Decimal objects to float in dicts/lists.
+        """
+        import decimal
+        if isinstance(obj, dict):
+            return {k: self._convert_decimal(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_decimal(i) for i in obj]
+        elif isinstance(obj, decimal.Decimal):
+            return float(obj)
+        else:
+            return obj
     
     def __init__(self, project_id: str, region: str = "us-central1"):
         """Initialize Plan Info Agent"""
         self.project_id = project_id
         self.region = region
         self.bq_client = bigquery.Client(project=project_id)
+
+        # Retry configuration for Vertex AI calls
+        self.max_retries = 3
+        self.base_delay = 1.0  # seconds
         
         # Initialize Vertex AI
         vertexai.init(project=project_id, location=region)
@@ -207,45 +226,39 @@ class PlanInfoAgent:
         except Exception as e:
             logger.error(f"Failed to log audit event: {str(e)}")
     
-    async def retrieve_plan_features(self) -> Dict[str, Any]:
+    def retrieve_a_plan_features(self) -> Dict[str, Any]:
         """
         TOOL 1: Retrieve detailed plan features
         
         Returns:
             Dictionary with all plan features
         """
-        logger.info("Retrieving all plan features")
-        start_time = time.time()
-        input_text = "{}"
-        caller = "anonymous_user"
-        
+        logger.info("Retrieving plan features")
         try:
-            output = {
+            query = f"""
+                SELECT 
+                    plan_name,
+                    tier,
+                    monthly_price,
+                    annual_price,
+                    features
+                FROM `{self.project_id}.client_data.plan_offerings`
+                ORDER BY monthly_price
+            """
+            results = self.bq_client.query(query).result()
+            plans = [self._convert_decimal(dict(row)) for row in results]
+            return {
                 "status": "success",
-                "plans": self.plans,
-                "total_plans": len(self.plans),
-                "timestamp": datetime.utcnow().isoformat()
+                "plans": plans,
+                "total_plans": len(plans)
             }
-            latency_ms = (time.time() - start_time) * 1000
-            await self._audit_log("plan_info_agent.retrieve_plan_features", caller, input_text, json.dumps(output), latency_ms)
-            return output
         except Exception as e:
-            latency_ms = (time.time() - start_time) * 1000
             logger.error(f"Feature retrieval error: {str(e)}")
-            error_output = {
+            return {
                 "status": "error",
-                "error": str(e)
+                "error": str(e),
+                "plans": []
             }
-            await self._audit_log(
-                "plan_info_agent.retrieve_plan_features",
-                caller,
-                input_text,
-                json.dumps(error_output),
-                latency_ms,
-                safety_result="error",
-                error_message=str(e)
-            )
-            return error_output
     
     async def get_pricing(self) -> Dict[str, Any]:
         """
@@ -754,6 +767,404 @@ class PlanInfoAgent:
                 metadata={"plan_tier": plan_tier}
             )
             return error_output
+
+    def retrieve_all_plan_features(self) -> Dict[str, Any]:
+        """
+        TOOL 1: Retrieve all plan features from BigQuery
+        
+        Returns:
+            Dictionary with all available plans
+        """
+        logger.info("Retrieving all plan features")
+        try:
+            query = f"""
+                SELECT 
+                    plan_name,
+                    tier,
+                    monthly_price,
+                    annual_price,
+                    features
+                FROM `{self.project_id}.client_data.plan_offerings`
+                ORDER BY monthly_price
+            """
+            results = self.bq_client.query(query).result()
+            plans = [self._convert_decimal(dict(row)) for row in results]
+            logger.info(f"Successfully retrieved {len(plans)} plans")
+            return {
+                "status": "success",
+                "plans": plans,
+                "total_plans": len(plans)
+            }
+        except Exception as e:
+            logger.error(f"Feature retrieval error: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "plans": []
+            }
+
+    def retrieve_plan_features(self) -> Dict[str, Any]:
+        """Backward-compatible wrapper to retrieve plan features.
+
+        This method matches the name used by existing callers and
+        simply delegates to ``retrieve_all_plan_features``.
+        """
+        return self.retrieve_all_plan_features()
+
+    def retrieve_specific_plan(self, plan_tier: str) -> Dict[str, Any]:
+        """
+        TOOL 2: Retrieve specific plan details by tier
+        
+        Args:
+            plan_tier: Plan tier name (e.g., 'Bronze', 'Silver', 'Gold')
+        
+        Returns:
+            Dictionary with specific plan details
+        """
+        logger.info(f"Retrieving plan details for tier: {plan_tier}")
+        try:
+            query = f"""
+                SELECT 
+                    plan_name,
+                    tier,
+                    monthly_price,
+                    annual_price,
+                    features
+                FROM `{self.project_id}.client_data.plan_offerings`
+                WHERE UPPER(tier) = UPPER('{plan_tier}')
+                LIMIT 1
+            """
+            results = self.bq_client.query(query).result()
+            rows = list(results)
+            
+            if not rows:
+                logger.warning(f"No plan found for tier: {plan_tier}")
+                return {
+                    "status": "error",
+                    "error": f"Plan tier '{plan_tier}' not found",
+                    "plan": None
+                }
+            
+            plan = self._convert_decimal(dict(rows[0]))
+            logger.info(f"Successfully retrieved plan: {plan_tier}")
+            return {
+                "status": "success",
+                "plan": plan,
+                "found": True
+            }
+        except Exception as e:
+            logger.error(f"Plan retrieval error for tier {plan_tier}: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "plan": None
+            }
+
+    def get_upgrade_suggestions(self, current_tier: str) -> Dict[str, Any]:
+        """
+        TOOL 3: Get upgrade suggestions based on current plan tier
+        
+        Args:
+            current_tier: Current plan tier (e.g., 'Bronze')
+        
+        Returns:
+            Dictionary with upgrade suggestions
+        """
+        logger.info(f"Getting upgrade suggestions for tier: {current_tier}")
+        try:
+            query = f"""
+                SELECT 
+                    plan_name,
+                    tier,
+                    monthly_price,
+                    annual_price,
+                    features
+                FROM `{self.project_id}.client_data.plan_offerings`
+                WHERE UPPER(tier) > UPPER('{current_tier}')
+                ORDER BY monthly_price ASC
+            """
+            results = self.bq_client.query(query).result()
+            upgrade_plans = [self._convert_decimal(dict(row)) for row in results]
+            
+            if not upgrade_plans:
+                logger.info(f"No upgrade options available for tier: {current_tier}")
+                return {
+                    "status": "success",
+                    "current_tier": current_tier,
+                    "upgrade_options": [],
+                    "message": "You are on the highest tier plan"
+                }
+            
+            logger.info(f"Found {len(upgrade_plans)} upgrade options for {current_tier}")
+            return {
+                "status": "success",
+                "current_tier": current_tier,
+                "upgrade_options": upgrade_plans,
+                "total_options": len(upgrade_plans)
+            }
+        except Exception as e:
+            logger.error(f"Upgrade suggestions error for tier {current_tier}: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "upgrade_options": []
+            }
+
+    def classify_plan_intent(self, query: str) -> Dict[str, Any]:
+        """
+        Use Vertex AI to classify user intent and extract plan information
+        
+        Args:
+            query: User's query string
+        
+        Returns:
+            Dictionary with intent classification and extracted plan info
+        """
+        prompt = f"""You are a financial services plan assistant. Analyze the following customer query and determine their intent.
+
+Query: {query}
+
+Available intents:
+1. PLAN_INFO - User is asking for information about plans, features, pricing, or comparisons
+2. PLAN_UPGRADE - User wants to change or upgrade their plan to a higher tier
+3. PLAN_DETAILS - User wants detailed information about a specific plan
+4. CURRENT_PLAN - User wants to know their current plan details
+
+Extract any mentioned plan tier if present (e.g., 'Bronze', 'Silver', 'Gold', 'No Plan').
+
+Respond ONLY in valid JSON format with no additional text:
+{{"intent": "PLAN_INFO|PLAN_UPGRADE|PLAN_DETAILS|CURRENT_PLAN", "confidence": 0.0-1.0, "mentioned_tier": "tier_name_or_null", "reasoning": "Brief explanation"}}
+
+Rules:
+- Confidence must be between 0 and 1
+- If unclear or ambiguous, set confidence to 0.6-0.8
+- mentioned_tier should be null if no plan tier is mentioned
+- Return valid JSON only, no markdown or explanations"""
+
+        logger.info(f"Classifying plan intent for query: {query[:100]}...")
+        
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(f"Calling Vertex AI for intent classification (attempt {attempt + 1}/{self.max_retries})")
+                
+                def call_vertex_ai():
+                    return self.model.generate_content(prompt)
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(call_vertex_ai)
+                    try:
+                        response = future.result(timeout=30.0)
+                        
+                        # Parse response
+                        response_text = response.text.strip()
+                        logger.info(f"Vertex AI response: {response_text}")
+
+                        try:
+                            # First try direct JSON parse
+                            result = json.loads(response_text)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"JSON parsing error in classify_plan_intent on attempt {attempt + 1}: {e}")
+                            # Try to extract JSON object from within markdown fences or extra text
+                            start = response_text.find("{")
+                            end = response_text.rfind("}")
+                            if start != -1 and end != -1 and end > start:
+                                json_candidate = response_text[start:end + 1]
+                                logger.info("Attempting to parse JSON candidate from response text")
+                                result = json.loads(json_candidate)
+                            else:
+                                raise
+
+                        result["status"] = "success"
+                        
+                        logger.info(f"Intent classified: {result.get('intent')} with confidence {result.get('confidence')}")
+                        return result
+                        
+                    except concurrent.futures.TimeoutError:
+                        logger.warning(f"Vertex AI call timed out on attempt {attempt + 1}")
+                        if attempt < self.max_retries - 1:
+                            time.sleep(self.base_delay * (2 ** attempt))
+                            continue
+                        else:
+                            return {
+                                "status": "error",
+                                "intent": "UNKNOWN",
+                                "confidence": 0.0,
+                                "error": "Vertex AI timeout after all retries"
+                            }
+                            
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON parsing error: {str(e)}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.base_delay * (2 ** attempt))
+                    continue
+                else:
+                    return {
+                        "status": "error",
+                        "intent": "UNKNOWN",
+                        "confidence": 0.0,
+                        "error": f"Failed to parse Vertex AI response: {str(e)}"
+                    }
+            except Exception as e:
+                logger.error(f"Intent classification error on attempt {attempt + 1}: {str(e)}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.base_delay * (2 ** attempt))
+                    continue
+                else:
+                    return {
+                        "status": "error",
+                        "intent": "UNKNOWN",
+                        "confidence": 0.0,
+                        "error": str(e)
+                    }
+
+    def generate_upgrade_recommendation(self, current_tier: str, upgrade_options: list, user_query: str) -> Dict[str, Any]:
+        """
+        Use Vertex AI to generate personalized upgrade recommendations
+        
+        Args:
+            current_tier: User's current plan tier
+            upgrade_options: List of available upgrade plans
+            user_query: Original user query
+        
+        Returns:
+            Dictionary with AI-generated recommendations
+        """
+        plans_text = "\n".join([
+            f"- {plan['plan_name']} ({plan['tier']}): ${plan['monthly_price']}/month, ${plan['annual_price']}/year\n  Features: {plan['features']}"
+            for plan in upgrade_options
+        ])
+        
+        prompt = f"""You are a financial services advisor. Based on the user's current plan and available options, provide a personalized upgrade recommendation.
+
+Current Plan: {current_tier}
+User Query: {user_query}
+
+Available Upgrade Options:
+{plans_text}
+
+Provide a JSON response with:
+1. recommended_plan - The best upgrade option
+2. key_benefits - Top 3 benefits of upgrading
+3. cost_analysis - Monthly and annual savings/cost comparison
+4. reasoning - Why this upgrade matches their needs
+
+Respond in JSON format only:
+{{"recommended_plan": "plan_name", "key_benefits": ["benefit1", "benefit2", "benefit3"], "cost_analysis": "detailed comparison", "reasoning": "explanation"}}"""
+
+        logger.info(f"Generating upgrade recommendation for {current_tier}")
+        
+        for attempt in range(self.max_retries):
+            try:
+                def call_vertex_ai():
+                    return self.model.generate_content(prompt)
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(call_vertex_ai)
+                    response = future.result(timeout=30.0)
+
+                response_text = response.text.strip()
+                logger.info(f"Vertex AI upgrade response: {response_text}")
+
+                try:
+                    # First try direct JSON parse
+                    result = json.loads(response_text)
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON parsing error in generate_upgrade_recommendation on attempt {attempt + 1}: {e}")
+                    # Try to extract JSON object from within markdown fences or extra text
+                    start = response_text.find("{")
+                    end = response_text.rfind("}")
+                    if start != -1 and end != -1 and end > start:
+                        json_candidate = response_text[start:end + 1]
+                        logger.info("Attempting to parse JSON candidate from response text")
+                        result = json.loads(json_candidate)
+                    else:
+                        raise
+
+                result["status"] = "success"
+                logger.info(f"Recommendation generated: {result.get('recommended_plan')}")
+                return result
+
+            except Exception as e:
+                logger.error(f"Recommendation generation error on attempt {attempt + 1}: {str(e)}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.base_delay * (2 ** attempt))
+                    continue
+                else:
+                    return {
+                        "status": "error",
+                        "error": str(e),
+                        "recommended_plan": None
+                    }
+
+    def process_plan_upgrade_request(self, user_query: str, user_id: str) -> Dict[str, Any]:
+        """
+        Main orchestrator: Process user query and return upgrade recommendation
+        
+        Args:
+            user_query: User's question/request
+            user_id: User identifier
+        
+        Returns:
+            Complete upgrade recommendation with options
+        """
+        logger.info(f"Processing plan upgrade request for user {user_id}: {user_query}")
+        
+        try:
+            # Step 1: Classify intent
+            intent_result = self.classify_plan_intent(user_query)
+            if intent_result.get("status") == "error":
+                logger.warning(f"Intent classification failed: {intent_result.get('error')}")
+                intent_result["mentioned_tier"] = None
+
+            mentioned_tier = intent_result.get("mentioned_tier")
+            logger.info(f"Mentioned plan tier in classification result: {mentioned_tier}")
+            intent = intent_result.get("intent", "UNKNOWN")
+            
+            # Step 2: Get all plans for context
+            all_plans = self.retrieve_all_plan_features()
+            
+            # Step 3: If specific tier mentioned, get details
+            specific_plan = None
+            if mentioned_tier:
+                specific_plan = self.retrieve_specific_plan(mentioned_tier)
+                logger.info(f"Retrieved specific plan for tier: {mentioned_tier}")
+            
+            # Step 4: Get upgrade suggestions
+            upgrade_suggestions = self.get_upgrade_suggestions(mentioned_tier or "Bronze")
+            
+            # Step 5: Generate AI recommendation
+            recommendation = None
+            if upgrade_suggestions.get("upgrade_options"):
+                recommendation = self.generate_upgrade_recommendation(
+                    mentioned_tier or "Bronze",
+                    upgrade_suggestions["upgrade_options"],
+                    user_query
+                )
+            
+            # Compile final response
+            response = {
+                "status": "success",
+                "user_id": user_id,
+                "intent": intent,
+                "confidence": intent_result.get("confidence", 0),
+                "mentioned_tier": mentioned_tier,
+                "all_plans": all_plans.get("plans", []),
+                "current_plan_details": specific_plan,
+                "upgrade_options": upgrade_suggestions.get("upgrade_options", []),
+                "ai_recommendation": recommendation,
+                "next_actions": ["show_comparison_table", "show_upgrade_prompt"]
+            }
+            
+            logger.info(f"Successfully processed upgrade request for user {user_id}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error in process_plan_upgrade_request: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "user_id": user_id
+            }   
 
 # ==================== Exports ====================
 

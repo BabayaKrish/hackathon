@@ -408,8 +408,6 @@ Rules:
         """
         logger.info(f"Checking compliance for user {user_id} intent {intent}")
         
-        start_time = time.time()
-
         try:
             # Query user profile and plan tier
             query = f"""
@@ -431,23 +429,12 @@ Rules:
             
             logger.info(f"User profile query returned {len(results)} rows")
             if not results:
-                error_output = json.dumps({
+                return json.dumps({
                     "status": "error",
                     "compliance_status": "DENIED",
                     "reason": "User not found"
                 })
-                latency_ms = int((time.time() - start_time) * 1000)
-                await self._audit_log(
-                    agent_name="check_compliance",
-                    caller=user_id,
-                    input_text=f"intent:{intent}",
-                    output_text=error_output,
-                    latency_ms=latency_ms,
-                    safety_result="denied",
-                    error_message="User not found"
-                )
-                return error_output
-
+            
             user_data = results[0]
             plan_tier = user_data.plan_tier
             kyc_verified = user_data.kyc_verified
@@ -468,94 +455,39 @@ Rules:
             allowed_intents = access_matrix.get(plan_tier.lower() if plan_tier else "", [])
             intent_allowed = intent in allowed_intents
             
-            # Define access matrix
-            access_matrix = {
-                "gold": ["REPORT_REQUEST", "PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK"],
-                "silver": ["REPORT_REQUEST", "PLAN_INFO", "BALANCE_CHECK"],
-                "bronze": ["BALANCE_CHECK", "PLAN_INFO"]
-            }
-            
-            allowed_intents = access_matrix.get(plan_tier.lower(), [])
-            intent_allowed = intent in allowed_intents
-            
-            # Check KYC requirements for sensitive operations
-            if intent == "REPORT_REQUEST" and not kyc_verified:
-                output = json.dumps({
-
+            # Check KYC requirements for all report types
+            if intent in REPORT_TYPES and not kyc_verified:
+                return json.dumps({
                     "status": "success",
                     "compliance_status": "REQUIRES_MFA",
                     "reason": f"KYC verification required for {intent}",
                     "requires_verification": True,
                     "allowed_features": allowed_intents
                 })
-                latency_ms = int((time.time() - start_time) * 1000)
-                await self._audit_log(
-                    agent_name="check_compliance",
-                    caller=user_id,
-                    input_text=f"intent:{intent}",
-                    output_text=output,
-                    latency_ms=latency_ms,
-                    safety_result="requires_mfa",
-                    metadata={"plan_tier": plan_tier, "kyc_verified": kyc_verified}
-                )
-                return output
 
             if not intent_allowed:
-                output = json.dumps({
+                return json.dumps({
                     "status": "success",
                     "compliance_status": "DENIED",
                     "reason": f"Your {plan_tier} plan doesn't include {intent}. Allowed report types: {', '.join(REPORT_TYPES)}",
                     "requires_verification": False,
                     "allowed_features": allowed_intents
                 })
-                latency_ms = int((time.time() - start_time) * 1000)
-                self._audit_log(
-                    agent_name="check_compliance",
-                    caller=user_id,
-                    input_text=f"intent:{intent}",
-                    output_text=output,
-                    latency_ms=latency_ms,
-                    safety_result="denied",
-                    metadata={"plan_tier": plan_tier, "intent": intent}
-                )
-                return output
-
-            output = json.dumps({
+            
+            return json.dumps({
                 "status": "success",
                 "compliance_status": "ALLOWED",
                 "plan_tier": plan_tier,
                 "allowed_features": allowed_intents
             })
-            latency_ms = int((time.time() - start_time) * 1000)
-            self._audit_log(
-                agent_name="check_compliance",
-                caller=user_id,
-                input_text=f"intent:{intent}",
-                output_text=output,
-                latency_ms=latency_ms,
-                safety_result="allowed",
-                metadata={"plan_tier": plan_tier, "intent": intent}
-            )
-            return output
-
+        
         except GoogleCloudError as e:
             logger.error(f"BigQuery error: {str(e)}")
-            error_output = json.dumps({
+            return json.dumps({
                 "status": "error",
                 "compliance_status": "DENIED",
                 "error": f"System error: {str(e)}"
             })
-            latency_ms = int((time.time() - start_time) * 1000)
-            self._audit_log(
-                agent_name="check_compliance",
-                caller=user_id,
-                input_text=f"intent:{intent}",
-                output_text=error_output,
-                latency_ms=latency_ms,
-                safety_result="error",
-                error_message=str(e)
-            )
-            return error_output
 
     @adk_tool
     async def route_to_agent(self, intent: str, user_id: str) -> str:
@@ -571,7 +503,6 @@ Rules:
             
         Routing Logic:
             REPORT_REQUEST   → report_agent (queries wire_reports table)
-            PLAN_UPGRADE     → plan_agent (executes upgrades)
             PLAN_INFO        → plan_info_agent (returns plan details)
             BALANCE_CHECK    → balance_agent (queries transactions)
             UNKNOWN          → general_agent (fallback)
@@ -582,8 +513,8 @@ Rules:
 
         agent_map = {
             "REPORT_REQUEST": "report_agent",
-            "PLAN_UPGRADE": "plan_agent",
             "PLAN_INFO": "plan_info_agent",
+            "PLAN_UPGRADE": "plan_info_agent",
             "BALANCE_CHECK": "balance_agent",
         }
 
@@ -594,20 +525,8 @@ Rules:
             target_agent = "report_agent"
         else:
             agent_map = {
-                "PLAN_UPGRADE": "plan_agent",
                 "PLAN_INFO": "plan_info_agent",
-                "BALANCE_CHECK": "balance_agent",
-            }
-            target_agent = agent_map.get(intent, "general_agent")
-
-        REPORT_TYPES = ["balance_report", "wire_details", "intraday_balance", "running_ledger"]
-
-        if intent in REPORT_TYPES:
-            target_agent = "report_agent"
-        else:
-            agent_map = {
-                "PLAN_UPGRADE": "plan_agent",
-                "PLAN_INFO": "plan_info_agent",
+                "PLAN_UPGRADE": "plan_info_agent",
                 "BALANCE_CHECK": "balance_agent",
             }
             target_agent = agent_map.get(intent, "general_agent")
@@ -649,7 +568,7 @@ Rules:
         TOOL 4: Execute specialized sub-agent.
         
         Args:
-            target_agent: Name of sub-agent (report_agent, plan_agent, etc.)
+            target_agent: Name of sub-agent (report_agent, etc.)
             user_id: User identifier
             query: Original user query
             intent: Classified intent
@@ -659,7 +578,6 @@ Rules:
             
         Sub-agents:
             - report_agent: Fetches wire reports from BigQuery
-            - plan_agent: Handles plan upgrade logic
             - plan_info_agent: Returns available plans and pricing
             - balance_agent: Queries account balance and transactions
         """
@@ -673,10 +591,9 @@ Rules:
                 agent = ReportAgent('ccibt-hack25ww7-743', 'us-central1')  # ✅ Instantiate agent
                 result = await agent.process_report_request(user_id, intent) # ✅ Delegate
                 data = result
-            elif target_agent == "plan_agent":
-                data = self._execute_plan_agent(user_id, query)
             elif target_agent == "plan_info_agent":
-                data = await self._execute_plan_info_agent(query)
+                agent = PlanInfoAgent('ccibt-hack25ww7-743', 'us-central1')  # Instantiate PlanInfoAgent
+                data = agent.process_plan_upgrade_request(query, user_id)  # Call the method to get plan features
             elif target_agent == "balance_agent":
                 data = self._execute_balance_agent(user_id)
             else:
@@ -711,17 +628,17 @@ Rules:
                 "error": str(e)
             })
 
-            elapsed_ms = int((time.time() - start_time) * 1000)
-            self._audit_log(
-                agent_name=target_agent,
-                caller=user_id,
-                input_text=query,
-                output_text=error_output,
-                latency_ms=elapsed_ms,
-                safety_result="error",
-                error_message=str(e),
-                metadata={"intent": intent}
-            )
+            #elapsed_ms = int((time.time() - start_time) * 1000)
+            #self._audit_log(
+            #    agent_name=target_agent,
+            #    caller=user_id,
+            #    input_text=query,
+            #    output_text=error_output,
+            #   latency_ms=elapsed_ms,
+            #    safety_result="error",
+            #    error_message=str(e),
+            #    metadata={"intent": intent}
+            #)
 
             return error_output
 
@@ -846,14 +763,24 @@ Rules:
         for plan in plans:
             plan_name = plan.get("plan_name", "Unknown Plan")
             tier = plan.get("tier", "")
-            monthly = plan.get("monthly_price", 0)
-            annual = plan.get("annual_price", 0)
+            monthly = plan.get("monthly_price")
+            annual = plan.get("annual_price")
             features = plan.get("features", "")
+
+            # Fix: handle None values for monthly/annual
+            try:
+                monthly_str = f"${float(monthly):.2f}/month" if monthly is not None else "N/A"
+            except Exception:
+                monthly_str = "N/A"
+            try:
+                annual_str = f"${float(annual):.2f}/year" if annual is not None else "N/A"
+            except Exception:
+                annual_str = "N/A"
 
             formatted += f"### {plan_name} ({tier.upper()})\n"
             formatted += f"**Pricing:**\n"
-            formatted += f"- Monthly: ${monthly:.2f}/month\n"
-            formatted += f"- Annual: ${annual:.2f}/year\n"
+            formatted += f"- Monthly: {monthly_str}\n"
+            formatted += f"- Annual: {annual_str}\n"
 
             if features:
                 formatted += f"**Features:**\n"
@@ -964,14 +891,24 @@ Rules:
         for plan in plans:
             plan_name = plan.get("plan_name", "Unknown Plan")
             tier = plan.get("tier", "")
-            monthly = plan.get("monthly_price", 0)
-            annual = plan.get("annual_price", 0)
+            monthly = plan.get("monthly_price")
+            annual = plan.get("annual_price")
             features = plan.get("features", "")
+
+            # Fix: handle None values for monthly/annual
+            try:
+                monthly_str = f"${float(monthly):.2f}/month" if monthly is not None else "N/A"
+            except Exception:
+                monthly_str = "N/A"
+            try:
+                annual_str = f"${float(annual):.2f}/year" if annual is not None else "N/A"
+            except Exception:
+                annual_str = "N/A"
 
             formatted += f"### {plan_name} ({tier.upper()})\n"
             formatted += f"**Pricing:**\n"
-            formatted += f"- Monthly: ${monthly:.2f}/month\n"
-            formatted += f"- Annual: ${annual:.2f}/year\n"
+            formatted += f"- Monthly: {monthly_str}\n"
+            formatted += f"- Annual: {annual_str}\n"
 
             if features:
                 formatted += f"**Features:**\n"

@@ -24,6 +24,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+
 # ===== Initialize session state =====
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
@@ -80,6 +81,185 @@ st.caption(f"👤 User: **{st.session_state.user_id}** | Current Plan: **{st.ses
 
 # ===== TABS =====
 tab1, tab2, tab3 = st.tabs(["💬 Chat Assistant", "📊 Plan Comparison", "📈 Reports"])
+
+def display_plan_upgrade_in_chat(response: Dict[str, Any]) -> str:
+    """
+    Format plan upgrade response as markdown for chat display,
+    showing the requested plan details FIRST, then AI recommendation
+    and other context.
+    """
+    logger.info(f"[streamlit] Formatting plan info response for chat display")
+    logger.info(f"[streamlit] Response keys: {data}")
+    if response.get("status") != "success":
+        return f"❌ **Error Processing Request**\n\nError: {response.get('error', 'Unknown error')}"
+
+    # ---- Extract core fields ----
+    confidence = response.get("confidence", 0.0)
+    mentioned_tier = (response.get("mentioned_tier") or "").strip()
+    all_plans = response.get("all_plans", [])
+    current_plan_details = response.get("current_plan_details", {})
+    upgrade_options = response.get("upgrade_options", [])
+    ai_recommendation = response.get("ai_recommendation", {})
+    next_actions = response.get("next_actions", [])
+
+    markdown = ""
+
+    # ============================================================
+    # 1. PRIMARY: Requested plan details (e.g. Silver)
+    #    - if user asked "Get the plan details for silver"
+    #    - use mentioned_tier first, then fall back to current_plan_details
+    # ============================================================
+
+    # Try to find the requested tier in all_plans
+    requested_plan = None
+    if mentioned_tier:
+        for p in all_plans:
+            if str(p.get("tier", "")).lower() == mentioned_tier.lower() or \
+               str(p.get("plan_name", "")).lower().startswith(mentioned_tier.lower()):
+                requested_plan = p
+                break
+
+    # If not found from all_plans, fall back to current_plan_details.plan
+    if not requested_plan and current_plan_details and current_plan_details.get("status") == "success":
+        requested_plan = current_plan_details.get("plan")
+
+    # Header
+    markdown += "📋 **Plan Information**\n\n"
+    
+    if requested_plan:
+        name = requested_plan.get("plan_name", "Unknown Plan")
+        tier = requested_plan.get("tier", "N/A")
+        monthly = requested_plan.get("monthly_price")
+        annual = requested_plan.get("annual_price")
+        features = requested_plan.get("features", "")
+
+        tier_emoji = "🥇" if tier.lower() == "gold" else \
+                     "🥈" if tier.lower() == "silver" else \
+                     "🥉" if tier.lower() == "bronze" else "🆓"
+
+        markdown += f"### {tier_emoji} **{name}** ({tier})\n\n"
+        markdown += "**💰 Pricing:**\n"
+        if monthly is not None:
+            markdown += f"• Monthly: **${monthly:.2f}**\n"
+        else:
+            markdown += "• Monthly: **Free**\n"
+        if annual is not None:
+            markdown += f"• Annual: **${annual:.2f}**"
+            if monthly:
+                savings = (monthly * 12) - annual
+                if savings > 0:
+                    savings_pct = (savings / (monthly * 12)) * 100
+                    markdown += f" (Save **${savings:.2f}** / year - {savings_pct:.0f}% off)"
+            markdown += "\n"
+        else:
+            markdown += "• Annual: **Free**\n"
+
+        if features:
+            feats = [f.strip() for f in features.split(",") if f.strip()]
+            markdown += "\n**✨ Features Included:**\n"
+            for f in feats:
+                markdown += f"• {f}\n"
+        markdown += "\n"
+    else:
+        markdown += "Could not find specific plan details for your request.\n\n"
+
+    # ============================================================
+    # 2. SECONDARY: AI-powered recommendation (optional)
+    # ============================================================
+
+    if ai_recommendation and ai_recommendation.get("status") == "success":
+        markdown += "---\n\n"
+        markdown += "### 🤖 AI-Powered Recommendation\n\n"
+        recommended_plan = ai_recommendation.get("recommended_plan")
+        key_benefits = ai_recommendation.get("key_benefits", [])
+        cost_analysis = ai_recommendation.get("cost_analysis", "")
+        reasoning = ai_recommendation.get("reasoning", "")
+
+        if recommended_plan:
+            markdown += f"**Recommended Plan:** `{recommended_plan}`\n\n"
+        if reasoning:
+            markdown += f"**Why:** {reasoning}\n\n"
+        if key_benefits:
+            markdown += "**🎯 Key Benefits:**\n"
+            for b in key_benefits:
+                markdown += f"✨ {b}\n"
+            markdown += "\n"
+        if cost_analysis:
+            markdown += f"**💳 Cost Breakdown:** {cost_analysis}\n\n"
+
+    # ============================================================
+    # 3. TERTIARY: Upgrade options (if any)
+    # ============================================================
+
+    if upgrade_options:
+        markdown += "---\n\n"
+        markdown += "### ⬆️ Available Upgrade Options\n\n"
+        for idx, up in enumerate(upgrade_options, 1):
+            pname = up.get("plan_name", "Unknown")
+            tier = up.get("tier", "N/A")
+            monthly = up.get("monthly_price")
+            annual = up.get("annual_price")
+            feats = up.get("features", "")
+            tier_emoji = "🥇" if tier.lower() == "gold" else \
+                         "🥈" if tier.lower() == "silver" else "🥉"
+
+            price_str = ""
+            if monthly is not None:
+                price_str = f"${monthly:.2f}/mo"
+            if annual is not None:
+                if price_str:
+                    price_str += f" or ${annual:.2f}/year"
+                else:
+                    price_str = f"${annual:.2f}/year"
+
+            markdown += f"{idx}. {tier_emoji} **{pname}** - {price_str}\n"
+            if feats:
+                flist = [f.strip() for f in feats.split(",") if f.strip()]
+                markdown += f"   • Features: {', '.join(flist[:2])}"
+                if len(flist) > 2:
+                    markdown += f", +{len(flist) - 2} more"
+                markdown += "\n"
+            markdown += "\n"
+
+    # ============================================================
+    # 4. QUATERNARY: All plans table (overview)
+    # ============================================================
+
+    if all_plans and len(all_plans) > 1:
+        markdown += "---\n\n"
+        markdown += "### 📊 Complete Plans Overview\n\n"
+        markdown += "| Plan | Tier | Monthly | Annual | Features |\n"
+        markdown += "|------|------|---------|--------|----------|\n"
+        for p in all_plans:
+            pname = p.get("plan_name", "Unknown")
+            tier = p.get("tier", "N/A")
+            monthly = p.get("monthly_price")
+            annual = p.get("annual_price")
+            feats = p.get("features", "")
+            monthly_str = f"${monthly:.2f}" if monthly else "Free"
+            annual_str = f"${annual:.2f}" if annual else "Free"
+            fcount = len(feats.split(",")) if feats else 0
+            markdown += f"| {pname} | {tier} | {monthly_str} | {annual_str} | {fcount} |\n"
+        markdown += "\n"
+
+    # ============================================================
+    # 5. Next actions
+    # ============================================================
+
+    if next_actions:
+        markdown += "---\n\n"
+        markdown += "### 💡 Next Steps\n\n"
+        for action in next_actions:
+            if action == "show_comparison_table":
+                markdown += "🔹 **View Detailed Comparison** - See side-by-side feature comparison in the Plan Comparison tab\n"
+            elif action == "show_upgrade_prompt":
+                markdown += "🔹 **Choose & Upgrade** - Select a plan from the recommendations above\n"
+            else:
+                markdown += f"🔹 **{action.replace('_', ' ').title()}**\n"
+        markdown += "\n💬 *Need help? Ask me any questions about the plans!*"
+
+    return markdown.strip()
+
 
 # ===== Helper function =====
 def send_to_root_agent(user_input: str) -> Dict:
@@ -168,6 +348,7 @@ with tab1:
                 result = send_to_root_agent(user_input)
                 handled = False
                 if result.get("status") == "success":
+                    assistant_response = ""
                     intent = result.get("intent")
                     agent_used = result.get("agent_used")
                     data = result.get("data", {})
@@ -266,41 +447,23 @@ with tab1:
                                 })
                                 with st.chat_message("assistant"):
                                     st.markdown(assistant_response)
-                    
-                    elif agent_used == "plan_info_agent":
-                        formatted_response = result.get("formatted_response", "").strip()
-                        if formatted_response:
-                            assistant_response = formatted_response
-                        else:
-                            plans = data.get("plans", [])
-                            if plans:
-                                assistant_response = "📋 **Plan Information**\n\n"
-                                for plan in plans:
-                                    name = plan.get("plan_name", "Unknown")
-                                    monthly = plan.get("monthly_price", 0)
-                                    annual = plan.get("annual_price", 0)
-                                    features = plan.get("features", "")
-                                    
-                                    assistant_response += f"### {name}\n"
-                                    assistant_response += f"**💰 Pricing:**\n"
-                                    assistant_response += f"• Monthly: ${monthly:.2f}\n"
-                                    assistant_response += f"• Annual: ${annual:.2f}\n"
-                                    if features:
-                                        assistant_response += f"\n**✨ Features:**\n"
-                                        for feat in [f.strip() for f in features.split(",")]:
-                                            assistant_response += f"• {feat}\n"
-                                    assistant_response += "\n"
-                            else:
-                                assistant_response = "No plans available."
-                    
-                    elif agent_used == "plan_agent":
-                        assistant_response = f"""🚀 **Plan Upgrade Initiated**
 
-Your upgrade request has been received. 
-Please complete payment in the **Plan Comparison** tab."""
-                    
-                    else:
-                        assistant_response = str(data) if data else "Request processed successfully."
+                    elif agent_used == "plan_agent":
+                        # Simple confirmation message for plan changes (upgrade/downgrade)
+                        action = data.get("action", "plan_change")
+                        current_plan = data.get("current_plan", "current")
+                        new_plan = data.get("new_plan", "selected")
+                        message = data.get("message", "Processing your request...")
+                        next_step = data.get("next_step", "payment_modal")
+
+                        assistant_response = f"""🔄 **Plan Change Request**\n\n"""
+                        assistant_response += f"**From:** `{current_plan}` → **To:** `{new_plan}`\n\n"
+                        assistant_response += f"**Status:** {message}\n"
+                        assistant_response += f"**Next Step:** {next_step.replace('_', ' ').title()}"
+
+                    elif agent_used == "plan_info_agent":
+                        # Format plan upgrade/info response; rendering handled below
+                        assistant_response = display_plan_upgrade_in_chat(data)
                     
                     # Only add to history and render if not handled above
                     if not handled:
@@ -338,12 +501,14 @@ Please complete payment in the **Plan Comparison** tab."""
 # TAB 2: PLAN COMPARISON
 # =====================================================================
 with tab2:
+    logger.info("[streamlit] Plan Comparison tab selected")
+    print("[streamlit] Plan Comparison tab selected")
     st.markdown("## 📊 Plan Comparison & Upgrade Options")
     
-    # Fetch plan info from API
+    # Fetch plan info from API (define and call inside tab block)
     import requests
-    @st.cache_data(show_spinner=False)
     def fetch_plans_data():
+        print("[streamlit] fetch_plans_data CALLED")
         try:
             response = requests.get(f"{API_BASE_URL}/plans", timeout=10)
             logger.info(f"[streamlit] Fetched plans data, status code: {response.status_code}")
@@ -388,6 +553,8 @@ with tab2:
                 return {}
         except Exception as e:
             return {}
+
+    # Call fetch_plans_data when tab is selected
     plans_data = fetch_plans_data()
     
     comparison_df = pd.DataFrame({

@@ -232,11 +232,11 @@ class ReportAgent:
                 "data": data,
                 "query_timestamp": datetime.utcnow().isoformat()
             }
-            latency_ms = (time.time() - start_time) * 1000
-            await self._audit_log("report_agent.query_bigquery", user_id, input_text, json.dumps(output), latency_ms, metadata={"user_id": user_id, "report_type": report_type})
+            #latency_ms = (time.time() - start_time) * 1000
+            #await self._audit_log("report_agent.query_bigquery", user_id, input_text, json.dumps(output), latency_ms, metadata={"user_id": user_id, "report_type": report_type})
             return output
         except Exception as e:
-            latency_ms = (time.time() - start_time) * 1000
+            #latency_ms = (time.time() - start_time) * 1000
             logger.error(f"BigQuery error: {str(e)}")
             error_output = {
                 "status": "error",
