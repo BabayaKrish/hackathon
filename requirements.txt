@@ -22,3 +22,4 @@ opentelemetry-exporter-gcp-trace==1.6.0
 pytest==7.4.3
 pytest-asyncio==0.23.0
 pytest-cov==4.1.0
+pandas==2.1.0
