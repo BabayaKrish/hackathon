@@ -166,7 +166,7 @@ with tab1:
         with st.spinner("Processing..."):
             try:
                 result = send_to_root_agent(user_input)
-                
+                handled = False
                 if result.get("status") == "success":
                     intent = result.get("intent")
                     agent_used = result.get("agent_used")
@@ -189,6 +189,7 @@ with tab1:
 ✅ Visit the 'Reports' tab for detailed analytics"""
                     
                     elif agent_used == "report_agent":
+                        handled = True
                         reports = []
                         if isinstance(data, list):
                             reports = data
@@ -201,38 +202,70 @@ with tab1:
                             reports = data.get("reports", [])
                         logger.info(f"[streamlit] Report Agent data: {data}")
                         if reports:
-                            assistant_response = f"📊 **Wire Transfer Reports** ({len(reports)} found)\n\n"
-                            for i, report in enumerate(reports[:5], 1):
-                                report_id = report.get("report_id", "N/A")
-                                amount = report.get("wire_amount", 0)
-                                status = report.get("status", "pending")
-                                assistant_response += f"{i}. Report #{report_id} - ${amount:,.2f} ({status})\n"
-                            with st.chat_message("assistant"):
-                                st.markdown(assistant_response)
-                                st.dataframe(pd.DataFrame(reports))
-                                import re
-                                chart_type = "bar"
-                                if re.search(r"pie chart", user_input, re.IGNORECASE):
-                                    chart_type = "pie"
-                                elif re.search(r"line chart", user_input, re.IGNORECASE):
-                                    chart_type = "line"
-                                df = pd.DataFrame(reports)
-                                if df.shape[0] > 0 and "wire_amount" in df.columns and "status" in df.columns:
-                                    if chart_type == "bar":
-                                        fig = px.bar(df, x="status", y="wire_amount", color="status", title="Wire Amount by Status")
-                                    elif chart_type == "pie":
-                                        fig = px.pie(df, names="status", values="wire_amount", title="Wire Amount Distribution by Status")
-                                    elif chart_type == "line":
-                                        fig = px.line(df, x="wire_date", y="wire_amount", title="Wire Amount Over Time")
+                            df = pd.DataFrame(reports)
+                            # Balance Report
+                            if all(col in df.columns for col in ["balance_date", "opening_balance", "closing_balance"]):
+                                assistant_response = f"📊 **Balance Report** ({len(reports)} records)\n\n"
+                                with st.chat_message("assistant"):
+                                    st.markdown(assistant_response)
+                                    st.dataframe(df, use_container_width=True)
+                                    import plotly.graph_objects as go
+                                    fig = go.Figure()
+                                    fig.add_trace(go.Scatter(x=df["balance_date"], y=df["opening_balance"], mode="lines+markers", name="Opening Balance"))
+                                    fig.add_trace(go.Scatter(x=df["balance_date"], y=df["closing_balance"], mode="lines+markers", name="Closing Balance"))
+                                    fig.update_layout(title="Opening & Closing Balances Over Time", xaxis_title="Date", yaxis_title="Balance", height=500, template="plotly_white")
                                     st.plotly_chart(fig, use_container_width=True)
+                            # Intraday Balance Report
+                            elif all(col in df.columns for col in ["balance_timestamp", "current_balance", "available_balance"]):
+                                assistant_response = f"📊 **Intraday Balance Report** ({len(reports)} records)\n\n"
+                                with st.chat_message("assistant"):
+                                    st.markdown(assistant_response)
+                                    st.dataframe(df, use_container_width=True)
+                                    # Bar chart for current/available balance over time
+                                    fig = go.Figure()
+                                    fig.add_trace(go.Bar(x=df["balance_timestamp"], y=df["current_balance"], name="Current Balance"))
+                                    fig.add_trace(go.Bar(x=df["balance_timestamp"], y=df["available_balance"], name="Available Balance"))
+                                    fig.update_layout(barmode="group", title="Intraday Balances Over Time", xaxis_title="Timestamp", yaxis_title="Balance", height=500, template="plotly_white")
+                                    st.plotly_chart(fig, use_container_width=True)
+                            # Running Ledger Report
+                            elif all(col in df.columns for col in ["transaction_type", "amount"]):
+                                assistant_response = f"📊 **Running Ledger** ({len(reports)} records)\n\n"
+                                with st.chat_message("assistant"):
+                                    st.markdown(assistant_response)
+                                    st.dataframe(df, use_container_width=True)
+                                    # Bar chart: total amount by transaction_type
+                                    bar_df = df.groupby("transaction_type")["amount"].sum().reset_index()
+                                    fig = px.bar(bar_df, x="transaction_type", y="amount", title="Total Amount by Transaction Type", color="transaction_type")
+                                    st.plotly_chart(fig, use_container_width=True)
+                                    # Pie chart: amount by transaction_type
+                                    if bar_df.shape[0] > 1:
+                                        fig2 = px.pie(bar_df, names="transaction_type", values="amount", title="Amount Distribution by Transaction Type")
+                                        st.plotly_chart(fig2, use_container_width=True)
+                            # Default: Wire Transfer Report
+                            else:
+                                display_cols = [
+                                    col for col in [
+                                        "wire_amount", "status", "wire_date", "destination_account", "destination_bank", "beneficiary_name", "reference_number"
+                                    ] if col in df.columns
+                                ]
+                                pretty_df = df[display_cols] if display_cols else df
+                                assistant_response = f"📊 **Wire Transfer Reports** ({len(reports)} found)\n\n"
+                                with st.chat_message("assistant"):
+                                    st.markdown(assistant_response)
+                                    st.dataframe(pretty_df, use_container_width=True)
+                                    if df.shape[0] > 0 and "wire_amount" in df.columns and "status" in df.columns:
+                                        fig = px.pie(df, names="status", values="wire_amount", title="Wire Amount Distribution by Status")
+                                        st.plotly_chart(fig, use_container_width=True)
+                            # Do not return here; just end the block to prevent double rendering
                         else:
-                            assistant_response = "No wire reports found."
-                            st.session_state.chat_history.append({
-                                "role": "assistant",
-                                "content": assistant_response
-                            })
-                            with st.chat_message("assistant"):
-                                st.markdown(assistant_response)
+                            if not handled:
+                                assistant_response = "No wire reports found."
+                                st.session_state.chat_history.append({
+                                    "role": "assistant",
+                                    "content": assistant_response
+                                })
+                                with st.chat_message("assistant"):
+                                    st.markdown(assistant_response)
                     
                     elif agent_used == "plan_info_agent":
                         formatted_response = result.get("formatted_response", "").strip()
@@ -269,16 +302,16 @@ Please complete payment in the **Plan Comparison** tab."""
                     else:
                         assistant_response = str(data) if data else "Request processed successfully."
                     
-                    # Add to history and display
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": assistant_response
-                    })
-                    
-                    with st.chat_message("assistant"):
-                        st.markdown(assistant_response)
-                        if reports:
-                            st.dataframe(pd.DataFrame(reports))
+                    # Only add to history and render if not handled above
+                    if not handled:
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": assistant_response
+                        })
+                        with st.chat_message("assistant"):
+                            st.markdown(assistant_response)
+                            if 'reports' in locals() and reports:
+                                st.dataframe(pd.DataFrame(reports))
                 
                 elif result.get("status") == "low_confidence":
                     error_msg = f"🤔 I'm not sure about that ({result.get('confidence', 0)*100:.0f}% confident). Could you rephrase?"
@@ -299,7 +332,7 @@ Please complete payment in the **Plan Comparison** tab."""
                 with st.chat_message("assistant"):
                     st.error(error_msg)
         
-        st.rerun()
+        #st.rerun()
 
 # =====================================================================
 # TAB 2: PLAN COMPARISON
