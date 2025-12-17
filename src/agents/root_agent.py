@@ -365,7 +365,17 @@ Respond ONLY in valid JSON format and reasoning about the selection of intent.""
                 # PARSE CLEANED TEXT
                 result = json.loads(response_text)
                 intent_value = result.get("intent", "UNKNOWN")
-                intent_value = intent_value.lower()  # Normalize to lowercase
+                # Normalize intent for comparison: report types to lowercase, others to uppercase
+                report_types_lower = [r.lower() for r in REPORT_TYPES]
+                plan_upgrade_aliases = ["PLAN_UPGRADE", "PLAN DOWNGRADE", "UPGRADE_PLAN", "DOWNGRADE_PLAN"]
+                if intent_value.lower() in report_types_lower:
+                    intent_value = intent_value.lower()
+                elif intent_value.upper() in ["PLAN_INFO", "BALANCE_CHECK", "OUT_OF_SCOPE"]:
+                    intent_value = intent_value.upper()
+                elif intent_value.upper() in plan_upgrade_aliases:
+                    intent_value = "PLAN_UPGRADE"
+                else:
+                    intent_value = "UNKNOWN"
                 confidence = float(result.get("confidence", 0.0))
                 reasoning = result.get("reasoning", "")
                 
