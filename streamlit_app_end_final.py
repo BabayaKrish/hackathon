@@ -28,9 +28,9 @@ st.set_page_config(
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'current_plan' not in st.session_state:
-    st.session_state.current_plan = 'SILVER'
+    st.session_state.current_plan = 'GOLD'
 if 'user_id' not in st.session_state:
-    st.session_state.user_id = 'demo_user'
+    st.session_state.user_id = 'user_001'
 if 'selected_upgrade_plan' not in st.session_state:
     st.session_state.selected_upgrade_plan = None
 if 'show_payment_form' not in st.session_state:
@@ -79,7 +79,7 @@ st.markdown("# 💬 Financial Assistant & Plan Management")
 st.caption(f"👤 User: **{st.session_state.user_id}** | Current Plan: **{st.session_state.current_plan}**")
 
 # ===== TABS =====
-tab1, tab2, tab3, tab4 = st.tabs(["💬 Chat Assistant", "📊 Plan Comparison", "📈 Reports", "💳 Transactions"])
+tab1, tab2, tab3 = st.tabs(["💬 Chat Assistant", "📊 Plan Comparison", "📈 Reports"])
 
 # ===== Helper function =====
 def send_to_root_agent(user_input: str) -> Dict:
@@ -340,65 +340,55 @@ Please complete payment in the **Plan Comparison** tab."""
 with tab2:
     st.markdown("## 📊 Plan Comparison & Upgrade Options")
     
-    plans_data = {
-        "Bronze": {
-            "price_monthly": "$29",
-            "price_annual": "$290",
-            "transactions": "500/month",
-            "reports": "3 basic",
-            "support": "Email",
-            "history": "7 days",
-            "features": [
-                "Up to 500 monthly transactions",
-                "Basic account balance reports",
-                "Mobile app access",
-                "Email support",
-                "7-day transaction history",
-                "2-Factor Authentication"
-            ]
-        },
-        "Silver": {
-            "price_monthly": "$99",
-            "price_annual": "$990",
-            "transactions": "5,000/month",
-            "reports": "9 types",
-            "support": "Phone & Email",
-            "history": "90 days",
-            "features": [
-                "Up to 5,000 monthly transactions",
-                "Advanced reporting (9 report types)",
-                "API access",
-                "Mobile app + Web dashboard",
-                "Phone & Email support",
-                "90-day transaction history",
-                "Advanced security (SSO, MFA)",
-                "Custom alerts",
-                "Scheduled reports"
-            ]
-        },
-        "Gold": {
-            "price_monthly": "$299",
-            "price_annual": "$2,990",
-            "transactions": "Unlimited",
-            "reports": "9 + Custom",
-            "support": "24/7 Dedicated",
-            "history": "7 years",
-            "features": [
-                "Unlimited transactions",
-                "All reports + custom reports",
-                "Full API access with webhooks",
-                "Multiple user accounts",
-                "24/7 dedicated support team",
-                "7-year transaction history",
-                "Enterprise security",
-                "Custom dashboards",
-                "Real-time alerts",
-                "SLA guarantee (99.9%)",
-                "Priority onboarding",
-                "Quarterly business reviews"
-            ]
-        }
-    }
+    # Fetch plan info from API
+    import requests
+    @st.cache_data(show_spinner=False)
+    def fetch_plans_data():
+        try:
+            response = requests.get(f"{API_BASE_URL}/plans", timeout=10)
+            logger.info(f"[streamlit] Fetched plans data, status code: {response.status_code}")
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"[streamlit] Fetched plans data: {result}")
+                plans = result.get("plans", [])
+                # Map API response to the required format
+                plans_data = {}
+                for plan in plans:
+                    raw_name = plan.get("name", "").lower()
+                    # Normalize to canonical keys
+                    if "bronze" in raw_name:
+                        key = "Bronze"
+                    elif "silver" in raw_name:
+                        key = "Silver"
+                    elif "gold" in raw_name:
+                        key = "Gold"
+                    else:
+                        continue  # skip unknown plans
+                    price = plan.get("price", 0)
+                    price_monthly = f"${price}" if price is not None else "N/A"
+                    price_annual = f"${plan.get('price_annual', price*12)}" if plan.get('price_annual') else (f"${price*12}" if price else "N/A")
+                    transactions = plan.get("transactions", "")
+                    features = plan.get("features", [])
+                    if isinstance(features, str):
+                        features = [f.strip() for f in features.split(",") if f.strip()]
+                    reports = plan.get("reports", "") if "reports" in plan else ""
+                    support = plan.get("support", "") if "support" in plan else ""
+                    history = plan.get("history", "") if "history" in plan else ""
+                    plans_data[key] = {
+                        "price_monthly": price_monthly,
+                        "price_annual": price_annual,
+                        "transactions": transactions,
+                        "reports": reports,
+                        "support": support,
+                        "history": history,
+                        "features": features
+                    }
+                return plans_data
+            else:
+                return {}
+        except Exception as e:
+            return {}
+    plans_data = fetch_plans_data()
     
     comparison_df = pd.DataFrame({
         "Feature": ["Monthly Price", "Annual Price", "Transactions/Month", "Reports Available", "Support", "History Retention"],
@@ -411,53 +401,101 @@ with tab2:
     st.markdown("---")
     
     col1, col2, col3 = st.columns(3)
-    
+
+    # Track which upgrade button was clicked
+    if 'show_payment_form' not in st.session_state:
+        st.session_state.show_payment_form = False
+    if 'selected_upgrade_plan' not in st.session_state:
+        st.session_state.selected_upgrade_plan = None
+
+    def show_payment(plan):
+        st.session_state.show_payment_form = True
+        st.session_state.selected_upgrade_plan = plan
+
     with col1:
         st.markdown("### 🥉 Bronze")
-        st.markdown(f"**{plans_data['Bronze']['price_monthly']}/mo**")
-        for feature in plans_data['Bronze']['features']:
-            st.markdown(f"✓ {feature}")
+        bronze = plans_data.get('Bronze', plans_data.get('bronze', {}))
+        if bronze:
+            st.markdown(f"**{bronze.get('price_monthly', 'N/A')}/mo**")
+            st.info("⭐ Affordable")
+            for feature in bronze.get('features', []):
+                st.markdown(f"✓ {feature}")
+        else:
+            st.warning("Bronze plan data not available.")
         if st.session_state.current_plan != "BRONZE":
-            if st.button("⬆️ Upgrade to Bronze", key="bronze_upgrade"):
-                st.session_state.current_plan = "BRONZE"
-                st.success("✅ Plan updated!")
-                st.rerun()
+            if st.button("⬆️ Switch to Bronze", key="bronze_upgrade"):
+                show_payment('Bronze')
         else:
             st.markdown("**✅ Current Plan**")
-    
+
     with col2:
         st.markdown("### 🥈 Silver (Popular)")
-        st.markdown(f"**{plans_data['Silver']['price_monthly']}/mo**")
-        st.info("⭐ Most popular")
-        for feature in plans_data['Silver']['features']:
-            st.markdown(f"✓ {feature}")
+        silver = plans_data.get('Silver', plans_data.get('silver', {}))
+        if silver:
+            st.markdown(f"**{silver.get('price_monthly', 'N/A')}/mo**")
+            st.info("⭐ Most popular")
+            for feature in silver.get('features', []):
+                st.markdown(f"✓ {feature}")
+        else:
+            st.warning("Silver plan data not available.")
         if st.session_state.current_plan != "SILVER":
-            if st.button("⬆️ Upgrade to Silver", key="silver_upgrade"):
-                st.session_state.current_plan = "SILVER"
-                st.success("✅ Plan updated!")
-                st.rerun()
+            if st.button("⬆️ Switch to Silver", key="silver_upgrade"):
+                show_payment('Silver')
         else:
             st.markdown("**✅ Current Plan**")
-    
+
     with col3:
         st.markdown("### 🥇 Gold (Enterprise)")
-        st.markdown(f"**{plans_data['Gold']['price_monthly']}/mo**")
-        st.success("🚀 Enterprise")
-        for feature in plans_data['Gold']['features']:
-            st.markdown(f"✓ {feature}")
+        gold = plans_data.get('Gold', plans_data.get('gold', {}))
+        if gold:
+            st.markdown(f"**{gold.get('price_monthly', 'N/A')}/mo**")
+            st.info("⭐ Most features")
+            for feature in gold.get('features', []):
+                st.markdown(f"✓ {feature}")
+        else:
+            st.warning("Gold plan data not available.")
         if st.session_state.current_plan != "GOLD":
-            if st.button("⬆️ Upgrade to Gold", key="gold_upgrade"):
-                st.session_state.current_plan = "GOLD"
-                st.success("✅ Plan updated!")
-                st.rerun()
+            if st.button("⬆️ Switch to Gold", key="gold_upgrade"):
+                show_payment('Gold')
         else:
             st.markdown("**✅ Current Plan**")
+
+    # Show payment form if upgrade button was clicked
+    if st.session_state.show_payment_form and st.session_state.selected_upgrade_plan:
+        st.markdown(f"""
+            <div>        
+                <h3 style='text-align:center; margin-bottom: 1.5rem;'>💳 Billing Details for <span style='color:#0072C6'>{st.session_state.selected_upgrade_plan} Plan</span></h3>
+            </div>
+        """, unsafe_allow_html=True)
+        with st.form(key="billing_form"):
+            name = st.text_input("👤 Name on Account", placeholder="Full Name")
+            account_number = st.text_input("🏦 Account Number", placeholder="1234567890")
+            st.markdown("<div style='margin-bottom:0.5rem;'></div>", unsafe_allow_html=True)
+            st.markdown("<b>Card Details</b>", unsafe_allow_html=True)
+            card_col1, card_col2 = st.columns([2,1])
+            with card_col1:
+                card_number = st.text_input("💳 Card Number", placeholder="1234 5678 9012 3456", max_chars=19)
+            with card_col2:
+                exp_date = st.text_input("Exp. (MM/YY)", placeholder="MM/YY", max_chars=5)
+            cvv_col, _ = st.columns([1,2])
+            with cvv_col:
+                cvv = st.text_input("CVV", placeholder="123", type="password", max_chars=4)
+            st.markdown("<div style='margin-bottom:1rem;'></div>", unsafe_allow_html=True)
+            submitted = st.form_submit_button("💸 Proceed Payment", use_container_width=True)
+            cancel = st.form_submit_button("Cancel", use_container_width=True)
+            if submitted:
+                st.success("✅ Payment processed! (Demo)")
+                st.session_state.show_payment_form = False
+                st.session_state.selected_upgrade_plan = None
+            elif cancel:
+                st.session_state.show_payment_form = False
+                st.session_state.selected_upgrade_plan = None
 
 # =====================================================================
 # TAB 3: REPORTS
 # =====================================================================
 with tab3:
-    st.markdown("## 📈 Financial Reports & Analytics")
+    st.markdown("## 📈 Agentic Vantage Assist")
     st.markdown("Generate and visualize reports based on your financial activity")
     
     col1, col2, col3 = st.columns(3)
@@ -567,24 +605,7 @@ with tab3:
     else:
         st.info("👆 Select report parameters and click 'Generate Report' to view analytics")
 
-# =====================================================================
-# TAB 4: TRANSACTIONS
-# =====================================================================
-with tab4:
-    st.markdown("## 💳 Recent Transactions")
-    st.markdown("View your recent transaction history")
-    
-    # Sample transaction data
-    transactions_data = {
-        "Date": ["2025-12-16", "2025-12-15", "2025-12-14", "2025-12-13", "2025-12-12"],
-        "Type": ["Deposit", "Withdrawal", "Transfer", "Deposit", "Withdrawal"],
-        "Amount": ["$1,500.00", "$250.50", "$100.00", "$2,000.00", "$75.25"],
-        "Status": ["Completed", "Completed", "Completed", "Completed", "Completed"],
-        "Description": ["Direct Deposit", "ATM Withdrawal", "Bank Transfer", "Direct Deposit", "Bill Payment"]
-    }
-    
-    transactions_df = pd.DataFrame(transactions_data)
-    st.dataframe(transactions_df, use_container_width=True, hide_index=True)
+
 
 # =====================================================================
 # FOOTER

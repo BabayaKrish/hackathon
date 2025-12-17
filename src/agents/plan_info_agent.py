@@ -173,27 +173,41 @@ class PlanInfoAgent:
         logger.info(f"PlanInfoAgent initialized for project {project_id}")
     
     def retrieve_plan_features(self) -> Dict[str, Any]:
-        """
-        TOOL 1: Retrieve detailed plan features
-        
-        Returns:
-            Dictionary with all plan features
-        """
-        logger.info("Retrieving all plan features")
-        
-        try:
-            return {
-                "status": "success",
-                "plans": self.plans,
-                "total_plans": len(self.plans),
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Feature retrieval error: {str(e)}")
-            return {
-                "status": "error",
-                "error": str(e)
-            }
+            """
+            TOOL 1: Retrieve detailed plan features
+            
+            Returns:
+                Dictionary with all plan features
+            """
+            logger.info("Retrieving plan features")
+            
+            try:
+                query = f"""
+                    SELECT 
+                        plan_name,
+                        tier,
+                        monthly_price,
+                        annual_price,
+                        features,
+                    FROM `{self.project_id}.client_data.plan_offerings`
+                    ORDER BY monthly_price
+                """
+                
+                results = self.bq_client.query(query).result()
+                plans = [dict(row) for row in results]
+                
+                return {
+                    "status": "success",
+                    "plans": plans,
+                    "total_plans": len(plans)
+                }
+            except Exception as e:
+                logger.error(f"Feature retrieval error: {str(e)}")
+                return {
+                    "status": "error",
+                    "error": str(e),
+                    "plans": []
+                }
     
     def get_pricing(self) -> Dict[str, Any]:
         """

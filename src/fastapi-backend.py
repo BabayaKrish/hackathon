@@ -427,57 +427,43 @@ async def get_plans():
     
     Returns: List of all plan tiers with features and pricing
     """
-    plans = [
-        {
-            "tier": "bronze",
-            "name": "Bronze",
-            "price": 29,
-            "billing": "monthly",
-            "transactions": "500/month",
-            "features": [
-                "Basic balance reports",
-                "Email support",
-                "7-day history",
-                "Mobile app access"
-            ]
-        },
-        {
-            "tier": "silver",
-            "name": "Silver",
-            "price": 99,
-            "billing": "monthly",
-            "transactions": "5,000/month",
-            "features": [
-                "All 9 report types",
-                "API access",
-                "Phone + Email support",
-                "90-day history",
-                "Advanced security"
-            ]
-        },
-        {
-            "tier": "gold",
-            "name": "Gold",
-            "price": 299,
-            "billing": "monthly",
-            "transactions": "Unlimited",
-            "features": [
-                "All reports + custom reports",
-                "Full API access",
-                "24/7 dedicated support",
-                "7-year history",
-                "Enterprise security",
-                "Custom dashboards",
-                "SLA guarantee (99.9%)"
-            ]
+    logger.info("Retrieving plan features in get plans api")
+    if not plan_info_agent:
+        raise HTTPException(status_code=503, detail="Plan Info Agent unavailable")
+    try:
+        result = plan_info_agent.retrieve_plan_features()
+        if result.get("status") != "success":
+            raise Exception(result.get("error", "Unknown error retrieving plan features"))
+        # Transform the plans to the UI-friendly format
+        plans = []
+        for plan in result.get("plans", []):
+            # Defensive: handle missing fields
+            name = plan.get("plan_name", "").capitalize()
+            tier = plan.get("tier", "").lower()
+            price = plan.get("monthly_price", 0)
+            annual_price = plan.get("annual_price", 0)
+            transactions = plan.get("transactions", "") if "transactions" in plan else ""
+            features = plan.get("features", [])
+            # If features is a string, split by comma
+            if isinstance(features, str):
+                features = [f.strip() for f in features.split(",") if f.strip()]
+            plans.append({
+                "tier": tier,
+                "name": name,
+                "price": price,
+                "billing": "monthly",
+                "transactions": transactions,
+                "features": features,
+                "price_annual": annual_price
+            })
+        return {
+            "status": "success",
+            "plans": plans,
+            "total": len(plans)
         }
-    ]
-    
-    return {
-        "status": "success",
-        "plans": plans,
-        "total": len(plans)
-    }
+    except Exception as e:
+        logger.error(f"Plan feature retrieval error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ==================== Plan Info Agent Endpoints ====================
 
