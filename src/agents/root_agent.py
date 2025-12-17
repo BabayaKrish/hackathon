@@ -11,12 +11,17 @@ from enum import Enum
 import time
 from functools import wraps
 import concurrent.futures
+import asyncio
+import sys
+import os
+from agents.plan_info_agent import PlanInfoAgent
 
 from google.cloud import bigquery
 from google.api_core.exceptions import GoogleAPIError as GoogleCloudError
-import vertexai
 from vertexai.generative_models import GenerativeModel, Tool
 from .report_agent import ReportAgent
+import vertexai
+from common_tools.AuditTool import async_log_event
 # ==================== Configuration & Types ====================
 
 class Intent(str, Enum):
@@ -91,7 +96,7 @@ class MetricsCollector:
     def record_execution(self, log_entry: Dict[str, Any]):
         """Write execution log to BigQuery"""
         try:
-            table_id = f"{self.project_id}.client_data.agent_audit_log"
+            table_id = f"{self.project_id}.client_data.agent_audit_logs"
             
             # Only include basic fields that are likely to exist in the audit log table
             basic_log_entry = {
@@ -138,22 +143,61 @@ class RootAgent:
     4. Aggregates and returns results
     """
     
-    def __init__(self, project_id: str, region: str = "us-central1"):
+    def __init__(self, project_id: str, region: str = "us-central1", plan_info_agent=None):
         """Initialize Root Agent with Google ADK"""
         self.project_id = project_id
         self.region = region
         self.bq_client = bigquery.Client(project=project_id)
-        #self.metrics = MetricsCollector(project_id)
-        
-        # Initialize Vertex AI
         vertexai.init(project=project_id, location=region)
         self.model = GenerativeModel("gemini-2.0-flash-exp")
-        
+        self.plan_info_agent = plan_info_agent  # <-- add this line
         logger.info(f"RootAgent initialized for project {project_id}")
+    # ==================== Audit Logging Helper ====================
 
+    async def _audit_log(
+        self,
+        agent_name: str,
+        caller: str,
+        input_text: str,
+        output_text: str,
+        latency_ms: float,
+        safety_result: str = "allowed",
+        error_message: Optional[str] = None,
+        metadata: Optional[Dict] = None
+    ):
+        """
+        Log event to audit trail using AuditTool.
 
-        
-    
+        Args:
+            agent_name: Name of the agent performing the action
+            caller: Caller context (user_id or function name)
+            input_text: Input to the operation
+            output_text: Output from the operation
+            latency_ms: Execution time in milliseconds
+            safety_result: Compliance status (allowed, denied, etc.)
+            error_message: Error message if any
+            metadata: Additional metadata to log
+        """
+        if async_log_event is None:
+            logger.debug("AuditTool not available, skipping audit logging")
+            return
+
+        try:
+            result = await async_log_event(
+                agent_name=agent_name,
+                model_name="gemini-2.0-flash-exp",
+                caller=caller,
+                input_text=input_text,
+                output_text=output_text,
+                latency_ms=latency_ms,
+                safety_result=safety_result,
+                error_message=error_message,
+                metadata=metadata
+            )
+            logger.info(f"Audit logged: {result}")
+        except Exception as e:
+            logger.error(f"Failed to log audit event: {str(e)}")
+
     # ==================== Tool Definitions ====================
     
     @adk_tool
@@ -170,9 +214,11 @@ class RootAgent:
         
         logger.info(f"Classifying intent for query: {query}")
 
+        start_time = time.time()
+
         # Define valid intents to match our enum
         REPORT_TYPES = ["balance_report", "wire_details", "intraday_balance", "running_ledger"]
-        valid_intents = REPORT_TYPES + ["PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK"]        
+        valid_intents = REPORT_TYPES + ["PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK"]
         prompt = f"""You are a financial services intent classifier. Analyze the following customer query and determine their intent.
 
 Query: {query}
@@ -339,7 +385,7 @@ Rules:
         })
     
     @adk_tool
-    def check_compliance(self, user_id: str, intent: str) -> str:
+    async def check_compliance(self, user_id: str, intent: str) -> str:
         """
         TOOL 2: Validate user compliance based on plan tier and KYC status.
         
@@ -362,6 +408,8 @@ Rules:
         """
         logger.info(f"Checking compliance for user {user_id} intent {intent}")
         
+        start_time = time.time()
+
         try:
             # Query user profile and plan tier
             query = f"""
@@ -383,12 +431,23 @@ Rules:
             
             logger.info(f"User profile query returned {len(results)} rows")
             if not results:
-                return json.dumps({
+                error_output = json.dumps({
                     "status": "error",
                     "compliance_status": "DENIED",
                     "reason": "User not found"
                 })
-            
+                latency_ms = int((time.time() - start_time) * 1000)
+                await self._audit_log(
+                    agent_name="check_compliance",
+                    caller=user_id,
+                    input_text=f"intent:{intent}",
+                    output_text=error_output,
+                    latency_ms=latency_ms,
+                    safety_result="denied",
+                    error_message="User not found"
+                )
+                return error_output
+
             user_data = results[0]
             plan_tier = user_data.plan_tier
             kyc_verified = user_data.kyc_verified
@@ -409,42 +468,87 @@ Rules:
             allowed_intents = access_matrix.get(plan_tier.lower() if plan_tier else "", [])
             intent_allowed = intent in allowed_intents
             
-            # Check KYC requirements for all report types
-            if intent in REPORT_TYPES and not kyc_verified:
-                return json.dumps({
+            # Check KYC requirements for sensitive operations
+            if intent == "REPORT_REQUEST" and not kyc_verified:
+                output = json.dumps({
+
                     "status": "success",
                     "compliance_status": "REQUIRES_MFA",
                     "reason": f"KYC verification required for {intent}",
                     "requires_verification": True,
                     "allowed_features": allowed_intents
                 })
+                latency_ms = int((time.time() - start_time) * 1000)
+                await self._audit_log(
+                    agent_name="check_compliance",
+                    caller=user_id,
+                    input_text=f"intent:{intent}",
+                    output_text=output,
+                    latency_ms=latency_ms,
+                    safety_result="requires_mfa",
+                    metadata={"plan_tier": plan_tier, "kyc_verified": kyc_verified}
+                )
+                return output
 
             if not intent_allowed:
-                return json.dumps({
+                output = json.dumps({
                     "status": "success",
                     "compliance_status": "DENIED",
                     "reason": f"Your {plan_tier} plan doesn't include {intent}. Allowed report types: {', '.join(REPORT_TYPES)}",
                     "requires_verification": False,
                     "allowed_features": allowed_intents
                 })
-            
-            return json.dumps({
+                latency_ms = int((time.time() - start_time) * 1000)
+                self._audit_log(
+                    agent_name="check_compliance",
+                    caller=user_id,
+                    input_text=f"intent:{intent}",
+                    output_text=output,
+                    latency_ms=latency_ms,
+                    safety_result="denied",
+                    metadata={"plan_tier": plan_tier, "intent": intent}
+                )
+                return output
+
+            output = json.dumps({
                 "status": "success",
                 "compliance_status": "ALLOWED",
                 "plan_tier": plan_tier,
                 "allowed_features": allowed_intents
             })
-        
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._audit_log(
+                agent_name="check_compliance",
+                caller=user_id,
+                input_text=f"intent:{intent}",
+                output_text=output,
+                latency_ms=latency_ms,
+                safety_result="allowed",
+                metadata={"plan_tier": plan_tier, "intent": intent}
+            )
+            return output
+
         except GoogleCloudError as e:
             logger.error(f"BigQuery error: {str(e)}")
-            return json.dumps({
+            error_output = json.dumps({
                 "status": "error",
                 "compliance_status": "DENIED",
                 "error": f"System error: {str(e)}"
             })
-    
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._audit_log(
+                agent_name="check_compliance",
+                caller=user_id,
+                input_text=f"intent:{intent}",
+                output_text=error_output,
+                latency_ms=latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+            return error_output
+
     @adk_tool
-    def route_to_agent(self, intent: str, user_id: str) -> str:
+    async def route_to_agent(self, intent: str, user_id: str) -> str:
         """
         TOOL 3: Route request to specialized sub-agent.
         
@@ -463,6 +567,17 @@ Rules:
             UNKNOWN          → general_agent (fallback)
         """
         logger.info(f"Routing {intent} to sub-agent")
+        
+        start_time = time.time()
+
+        agent_map = {
+            "REPORT_REQUEST": "report_agent",
+            "PLAN_UPGRADE": "plan_agent",
+            "PLAN_INFO": "plan_info_agent",
+            "BALANCE_CHECK": "balance_agent",
+        }
+
+        target_agent = agent_map.get(intent, "general_agent")
         REPORT_TYPES = ["balance_report", "wire_details", "intraday_balance", "running_ledger"]
 
         if intent in REPORT_TYPES:
@@ -474,8 +589,20 @@ Rules:
                 "BALANCE_CHECK": "balance_agent",
             }
             target_agent = agent_map.get(intent, "general_agent")
-        
-        return json.dumps({
+
+        REPORT_TYPES = ["balance_report", "wire_details", "intraday_balance", "running_ledger"]
+
+        if intent in REPORT_TYPES:
+            target_agent = "report_agent"
+        else:
+            agent_map = {
+                "PLAN_UPGRADE": "plan_agent",
+                "PLAN_INFO": "plan_info_agent",
+                "BALANCE_CHECK": "balance_agent",
+            }
+            target_agent = agent_map.get(intent, "general_agent")
+
+        output = json.dumps({
             "status": "success",
             "target_agent": target_agent,
             "intent": intent,
@@ -486,7 +613,20 @@ Rules:
                 "agent_service_url": f"http://localhost:8000/{target_agent}"
             }
         })
-    
+
+        latency_ms = int((time.time() - start_time) * 1000)
+        await self._audit_log(
+            agent_name="route_to_agent",
+            caller=user_id,
+            input_text=f"intent:{intent}",
+            output_text=output,
+            latency_ms=latency_ms,
+            safety_result="allowed",
+            metadata={"target_agent": target_agent, "intent": intent}
+        )
+
+        return output
+
     @adk_tool
     async def execute_sub_agent(
         self,
@@ -526,30 +666,57 @@ Rules:
             elif target_agent == "plan_agent":
                 data = self._execute_plan_agent(user_id, query)
             elif target_agent == "plan_info_agent":
-                data = self.execute_plan_info_agent(query)
+                data = await self._execute_plan_info_agent(query)
             elif target_agent == "balance_agent":
                 data = self._execute_balance_agent(user_id)
             else:
                 data = {"error": f"Unknown agent: {target_agent}"}
             
-            elapsed_ms = (time.time() - start_time) * 1000
+            elapsed_ms = int((time.time() - start_time) * 1000)
             
-            return json.dumps({
+            output = json.dumps({
                 "status": "success",
                 "agent": target_agent,
                 "data": data,
                 "execution_time_ms": elapsed_ms
             })
+
+            # Audit the sub-agent execution
+            await self._audit_log(
+                agent_name=target_agent,
+                caller=user_id,
+                input_text=query,
+                output_text=output,
+                latency_ms=elapsed_ms,
+                safety_result="allowed",
+                metadata={"intent": intent, "query": query}
+            )
+
+            return output
         except Exception as e:
             logger.error(f"Sub-agent execution error: {str(e)}")
-            return json.dumps({
+            error_output = json.dumps({
                 "status": "error",
                 "agent": target_agent,
                 "error": str(e)
             })
-    
+
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            self._audit_log(
+                agent_name=target_agent,
+                caller=user_id,
+                input_text=query,
+                output_text=error_output,
+                latency_ms=elapsed_ms,
+                safety_result="error",
+                error_message=str(e),
+                metadata={"intent": intent}
+            )
+
+            return error_output
+
     @adk_tool
-    def aggregate_results(
+    async def aggregate_results(
         self,
         sub_agent_data: str,
         intent: str,
@@ -574,6 +741,8 @@ Rules:
         """
         logger.info("Aggregating sub-agent results")
         
+        start_time = time.time()
+
         try:
             # Determine next actions
             next_actions_map = {
@@ -593,8 +762,8 @@ Rules:
             
                 # ✅ FORMAT DATA BASED ON INTENT
             formatted_data = self._format_agent_response(intent, agent_data)
-            
-            return json.dumps({
+
+            output = json.dumps({
                 "status": "success",
                 "intent": intent,
                 "confidence": confidence,
@@ -603,16 +772,44 @@ Rules:
                 "next_actions": next_actions,
                 "reasoning": self._get_intent_reasoning(intent, agent_data)
             })
+
+            # Audit the aggregation
+            latency_ms = int((time.time() - start_time) * 1000)
+            await self._audit_log(
+                agent_name="aggregate_results",
+                caller="system",
+                input_text=f"intent:{intent},confidence:{confidence}",
+                output_text=output,
+                latency_ms=latency_ms,
+                safety_result="allowed",
+                metadata={"intent": intent, "confidence": confidence, "next_actions": next_actions}
+            )
+
+            return output
         except Exception as e:
             logger.error(f"Aggregation error: {str(e)}")
-            return json.dumps({
+            error_output = json.dumps({
                 "status": "error",
                 "error": str(e)
             })
-        
+
+            latency_ms = int((time.time() - start_time) * 1000)
+            await self._audit_log(
+                agent_name="aggregate_results",
+                caller="system",
+                input_text=f"intent:{intent}",
+                output_text=error_output,
+                latency_ms=latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+
+            return error_output
+
+
     def _format_agent_response(self, intent: str, agent_data: Dict) -> str:
         """Format agent response for user display"""
-        
+
         if intent == "PLAN_INFO":
             return self._format_plan_info(agent_data)
         elif intent == "BALANCECHECK":
@@ -623,50 +820,50 @@ Rules:
             return self._format_upgrade_info(agent_data)
         else:
             return str(agent_data)
-        
+
     def _format_plan_info(self, data: Dict) -> str:
         """Format plan information for display"""
-        
+
         if not data or "plans" not in data:
             return "No plan information available."
-        
+
         plans = data.get("plans", [])
         if not plans:
             return "No plans found."
-        
+
         formatted = "📋 **Available Plans**\n\n"
-        
+
         for plan in plans:
             plan_name = plan.get("plan_name", "Unknown Plan")
             tier = plan.get("tier", "")
             monthly = plan.get("monthly_price", 0)
             annual = plan.get("annual_price", 0)
             features = plan.get("features", "")
-            
+
             formatted += f"### {plan_name} ({tier.upper()})\n"
             formatted += f"**Pricing:**\n"
             formatted += f"- Monthly: ${monthly:.2f}/month\n"
             formatted += f"- Annual: ${annual:.2f}/year\n"
-            
+
             if features:
                 formatted += f"**Features:**\n"
                 feature_list = [f.strip() for f in features.split(",")]
                 for feature in feature_list:
                     formatted += f"- {feature}\n"
-            
+
             formatted += "\n"
-        
+
         return formatted
 
 
     def _format_balance_info(self, data: Dict) -> str:
         """Format balance information for display"""
-        
+
         balance = data.get("balance", 0)
         currency = data.get("currency", "USD")
         transaction_count = data.get("transaction_count", 0)
         last_transaction = data.get("last_transaction", "Never")
-        
+
         return f"""💰 **Account Balance**
 
 **Current Balance:** {currency} {balance:,.2f}
@@ -677,36 +874,36 @@ Rules:
 
     def _format_report_info(self, data: Dict) -> str:
         """Format report information for display"""
-        
+
         reports = data.get("reports", [])
         if not reports:
             return "No reports available."
-        
+
         formatted = f"📊 **Available Reports** ({len(reports)} found)\n\n"
-        
+
         for report in reports:
             report_id = report.get("report_id", "N/A")
             amount = report.get("wire_amount", 0)
             destination = report.get("destination_bank", "N/A")
             status = report.get("status", "pending")
             date = report.get("report_date", "N/A")
-            
+
             formatted += f"**Report #{report_id}** - {status.upper()}\n"
             formatted += f"- Amount: ${amount:,.2f}\n"
             formatted += f"- Destination: {destination}\n"
             formatted += f"- Date: {date}\n\n"
-        
+
         return formatted
 
 
     def _format_upgrade_info(self, data: Dict) -> str:
         """Format upgrade information for display"""
-        
+
         action = data.get("action", "upgrade_requested")
         current_plan = data.get("current_plan", "Unknown")
         new_plan = data.get("new_plan", "Unknown")
         message = data.get("message", "Processing your request...")
-        
+
         return f"""🚀 **Plan Upgrade**
 
     **Current Plan:** {current_plan.upper()}
@@ -718,15 +915,133 @@ Rules:
 
     def _get_intent_reasoning(self, intent: str, data: Dict) -> str:
         """Generate reasoning based on intent and data"""
-        
+
         reasoning_map = {
             "PLAN_INFO": f"Retrieved {len(data.get('plans', []))} available plans",
             "BALANCECHECK": f"Current account balance is {data.get('currency', 'USD')} {data.get('balance', 0):,.2f}",
             "REPORTREQUEST": f"Found {len(data.get('reports', []))} available reports",
             "PLANUPGRADE": f"Upgrade from {data.get('current_plan', 'current')} to {data.get('new_plan', 'selected')} plan",
         }
-        
-        return reasoning_map.get(intent, "Request processed successfully")   
+
+        return reasoning_map.get(intent, "Request processed successfully")
+
+    def _format_agent_response(self, intent: str, agent_data: Dict) -> str:
+        """Format agent response for user display"""
+
+        if intent == "PLAN_INFO":
+            return self._format_plan_info(agent_data)
+        elif intent == "BALANCECHECK":
+            return self._format_balance_info(agent_data)
+        elif intent == "REPORTREQUEST":
+            return self._format_report_info(agent_data)
+        elif intent == "PLANUPGRADE":
+            return self._format_upgrade_info(agent_data)
+        else:
+            return str(agent_data)
+
+    def _format_plan_info(self, data: Dict) -> str:
+        """Format plan information for display"""
+
+        if not data or "plans" not in data:
+            return "No plan information available."
+
+        plans = data.get("plans", [])
+        if not plans:
+            return "No plans found."
+
+        formatted = "📋 **Available Plans**\n\n"
+
+        for plan in plans:
+            plan_name = plan.get("plan_name", "Unknown Plan")
+            tier = plan.get("tier", "")
+            monthly = plan.get("monthly_price", 0)
+            annual = plan.get("annual_price", 0)
+            features = plan.get("features", "")
+
+            formatted += f"### {plan_name} ({tier.upper()})\n"
+            formatted += f"**Pricing:**\n"
+            formatted += f"- Monthly: ${monthly:.2f}/month\n"
+            formatted += f"- Annual: ${annual:.2f}/year\n"
+
+            if features:
+                formatted += f"**Features:**\n"
+                feature_list = [f.strip() for f in features.split(",")]
+                for feature in feature_list:
+                    formatted += f"- {feature}\n"
+
+            formatted += "\n"
+
+        return formatted
+
+
+    def _format_balance_info(self, data: Dict) -> str:
+        """Format balance information for display"""
+
+        balance = data.get("balance", 0)
+        currency = data.get("currency", "USD")
+        transaction_count = data.get("transaction_count", 0)
+        last_transaction = data.get("last_transaction", "Never")
+
+        return f"""💰 **Account Balance**
+
+**Current Balance:** {currency} {balance:,.2f}
+**Recent Transactions:** {transaction_count} in last 90 days
+**Last Transaction:** {last_transaction}
+"""
+
+
+    def _format_report_info(self, data: Dict) -> str:
+        """Format report information for display"""
+
+        reports = data.get("reports", [])
+        if not reports:
+            return "No reports available."
+
+        formatted = f"📊 **Available Reports** ({len(reports)} found)\n\n"
+
+        for report in reports:
+            report_id = report.get("report_id", "N/A")
+            amount = report.get("wire_amount", 0)
+            destination = report.get("destination_bank", "N/A")
+            status = report.get("status", "pending")
+            date = report.get("report_date", "N/A")
+
+            formatted += f"**Report #{report_id}** - {status.upper()}\n"
+            formatted += f"- Amount: ${amount:,.2f}\n"
+            formatted += f"- Destination: {destination}\n"
+            formatted += f"- Date: {date}\n\n"
+
+        return formatted
+
+
+    def _format_upgrade_info(self, data: Dict) -> str:
+        """Format upgrade information for display"""
+
+        action = data.get("action", "upgrade_requested")
+        current_plan = data.get("current_plan", "Unknown")
+        new_plan = data.get("new_plan", "Unknown")
+        message = data.get("message", "Processing your request...")
+
+        return f"""🚀 **Plan Upgrade**
+
+    **Current Plan:** {current_plan.upper()}
+    **Upgrade To:** {new_plan.upper()}
+    **Status:** {message}
+    **Next Step:** {data.get("next_step", "Contact support")}
+    """
+
+
+    def _get_intent_reasoning(self, intent: str, data: Dict) -> str:
+        """Generate reasoning based on intent and data"""
+
+        reasoning_map = {
+            "PLAN_INFO": f"Retrieved {len(data.get('plans', []))} available plans",
+            "BALANCECHECK": f"Current account balance is {data.get('currency', 'USD')} {data.get('balance', 0):,.2f}",
+            "REPORTREQUEST": f"Found {len(data.get('reports', []))} available reports",
+            "PLANUPGRADE": f"Upgrade from {data.get('current_plan', 'current')} to {data.get('new_plan', 'selected')} plan",
+        }
+
+        return reasoning_map.get(intent, "Request processed successfully")
     # ==================== Sub-Agent Execution Methods ====================
     
     def _execute_report_agent(self, user_id: str, query: str) -> Dict[str, Any]:
@@ -780,57 +1095,13 @@ Rules:
             "message": "Plan upgrade initiated. Awaiting payment confirmation.",
             "next_step": "payment_modal"
         }
-    
-    def execute_plan_info_agent(self, query: str) -> Dict[str, Any]:
-        """Execute plan info agent - filter by query"""
-        logger.info(f"Executing plan info agent for query that user has passed: {query}")
-        # Extract plan name from query
-        query_lower = query.lower()
-        target_plan = None
-        if "gold" in query_lower:
-            target_plan = "Gold"
-        elif "silver" in query_lower:
-            target_plan = "Silver"
-        elif "bronze" in query_lower:
-            target_plan = "Bronze"
-        
-        if target_plan:
-            bq_query = f"""
-                          SELECT 
-                planname as plan_name,
-                tier, 
-                monthlyprice as monthly_price, 
-                annualprice as annual_price, 
-                features
-            FROM `{self.project_id}.clientdata.planofferings`
-            WHERE LOWER(tier) = LOWER('{target_plan}')
-            ORDER BY monthly_price DESC            """
-        else:
-            # Default: all plans
-            bq_query = f"""
-                SELECT planname, tier, monthlyprice as monthly_price, annualprice as annual_price, features
-                FROM `{self.project_id}.clientdata.planofferings`
-                ORDER BY monthly_price DESC
-            """
-        
-        try:
-            results = self.bq_client.query(bq_query).result()
-            plans = []
-            for row in results:
-                plan_dict = dict(row)
-                # Convert Decimal to float
-                if "monthly_price" in plan_dict and hasattr(plan_dict["monthly_price"], "__float__"):
-                    plan_dict["monthly_price"] = float(plan_dict["monthly_price"])
-                if "annual_price" in plan_dict and hasattr(plan_dict["annual_price"], "__float__"):
-                    plan_dict["annual_price"] = float(plan_dict["annual_price"])
-                plans.append(plan_dict)
-            
-            message = f"Found {len(plans)} plan(s) matching '{query}'"
-            return {"plans": plans, "message": message}
-        except Exception as e:
-            logger.error(f"Plan info agent error: {str(e)}")
-            return {"error": str(e), "plans": []}   
-    
+    async def _execute_plan_info_agent(self, query: str) -> Dict[str, Any]:
+        if self.plan_info_agent is None:
+            logger.error("PlanInfoAgent not initialized")
+            return {"error": "PlanInfoAgent not available"}
+        # Await the coroutine directly
+        return await self.plan_info_agent.process_info_request(query)
+
     def _execute_balance_agent(self, user_id: str) -> Dict[str, Any]:
         """Execute balance agent: fetch account balance and transactions"""
         bq_query = f"""
@@ -886,7 +1157,8 @@ Rules:
         logger.info(f"Processing query for user {user_id}: {query}")
         
         execution_log = []
-        
+        overall_start_time = time.time()
+
         try:
             # Step 1: Classify Intent
             step_start = time.time()
@@ -906,7 +1178,7 @@ Rules:
             
             # Step 2: Check Compliance
             step_start = time.time()
-            compliance_result_str = self.check_compliance(user_id, intent)
+            compliance_result_str = await self.check_compliance(user_id, intent)
             compliance_result = json.loads(compliance_result_str)
             compliance_status = compliance_result.get("compliance_status", "DENIED")
             execution_log.append({
@@ -920,7 +1192,7 @@ Rules:
             
             # Return early if compliance fails
             if compliance_status != "ALLOWED":
-                return {
+                error_result = {
                     "status": "error",
                     "user_id": user_id,
                     "intent": intent,
@@ -929,10 +1201,25 @@ Rules:
                     "error": compliance_result.get("reason", "Compliance check failed"),
                     "execution_log": execution_log
                 }
-            
+
+                # Audit the compliance failure
+                total_latency_ms = int((time.time() - overall_start_time) * 1000)
+                await self._audit_log(
+                    agent_name="process_query",
+                    caller=user_id,
+                    input_text=query,
+                    output_text=json.dumps(error_result),
+                    latency_ms=total_latency_ms,
+                    safety_result="denied",
+                    error_message=compliance_result.get("reason", "Compliance check failed"),
+                    metadata={"intent": intent, "compliance_status": compliance_status}
+                )
+
+                return error_result
+
             # Step 3: Route to Agent
             step_start = time.time()
-            routing_result_str = self.route_to_agent(intent, user_id)
+            routing_result_str = await self.route_to_agent(intent, user_id)
             routing_result = json.loads(routing_result_str)
             target_agent = routing_result.get("target_agent", "general_agent")
             execution_log.append({
@@ -947,7 +1234,7 @@ Rules:
             # Step 4: Execute Sub-Agent
             step_start = time.time()
             logger.info(f"Executing sub-agent: {target_agent}")
-            logger.info(f"Parameters for logging: user_id={user_id}, query={query}, intent={intent}")   
+            logger.info(f"Parameters for logging: user_id={user_id}, query={query}, intent={intent}")
             exec_result_str = await self.execute_sub_agent(target_agent, user_id, query, intent)
             exec_result = json.loads(exec_result_str)
             sub_agent_data = exec_result.get("data", {})
@@ -962,7 +1249,7 @@ Rules:
             
             # Step 5: Aggregate Results
             step_start = time.time()
-            agg_result_str = self.aggregate_results(
+            agg_result_str = await self.aggregate_results(
                 json.dumps(sub_agent_data),
                 intent,
                 confidence
@@ -987,7 +1274,7 @@ Rules:
             #})
             
             # Return final response
-            return {
+            final_response = {
                 "status": "success",
                 "user_id": user_id,
                 "intent": intent,
@@ -1000,7 +1287,26 @@ Rules:
                 "execution_log": execution_log,
                 "error": None
             }
-        
+
+            # Audit the final successful response
+            total_latency_ms = int((time.time() - overall_start_time) * 1000)
+            await self._audit_log(
+                agent_name="process_query",
+                caller=user_id,
+                input_text=query,
+                output_text=json.dumps(final_response),
+                latency_ms=total_latency_ms,
+                safety_result="allowed",
+                metadata={
+                    "intent": intent,
+                    "confidence": confidence,
+                    "agent_used": target_agent,
+                    "compliance_passed": True
+                }
+            )
+
+            return final_response
+
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
 
@@ -1014,7 +1320,7 @@ Rules:
             #    "error_message": str(e)
             #})
             
-            return {
+            error_result = {
                 "status": "error",
                 "user_id": user_id,
                 "intent": None,
@@ -1023,6 +1329,20 @@ Rules:
                 "error": str(e),
                 "execution_log": execution_log
             }
+
+            # Audit the error response
+            total_latency_ms = int((time.time() - overall_start_time) * 1000)
+            await self._audit_log(
+                agent_name="process_query",
+                caller=user_id,
+                input_text=query,
+                output_text=json.dumps(error_result),
+                latency_ms=total_latency_ms,
+                safety_result="error",
+                error_message=str(e)
+            )
+
+            return error_result
 
 
 # ==================== ADK App Deployment (Optional) ====================
@@ -1054,38 +1374,16 @@ def create_app():
  # ==================== FACTORY FUNCTION ====================
 
 def create_root_agent(project_id: str, region: str = "us-central1") -> RootAgent:
-    """
-    Factory function to create and initialize a Root Agent instance.
-    
-    This function handles initialization of all dependencies:
-    - Google Cloud credentials
-    - Vertex AI connection  
-    - BigQuery client
-    - Metrics collector
-    
-    Args:
-        project_id (str): GCP project ID (e.g., "ccibt-hack25ww7-743")
-        region (str): GCP region (default: "us-central1")
-    
-    Returns:
-        RootAgent: Fully initialized Root Agent instance
-    
-    Raises:
-        ValueError: If project_id is invalid
-        Exception: If initialization fails
-    
-    Example:
-        >>> agent = create_root_agent("my-project-id", "us-central1")
-        >>> result = await agent.process_query("user_001", "What is my balance?")
-    """
     if not project_id or not isinstance(project_id, str):
         raise ValueError("project_id must be a non-empty string")
     
     logger.info(f"Creating Root Agent for project: {project_id}")
     
     try:
-        # Create RootAgent instance (which initializes all services)
-        agent = RootAgent(project_id=project_id, region=region)
+        # Create PlanInfoAgent instance
+        plan_info_agent = PlanInfoAgent(project_id=project_id, region=region)
+        # Pass it to RootAgent
+        agent = RootAgent(project_id=project_id, region=region, plan_info_agent=plan_info_agent)
         logger.info(f"✅ Root Agent created successfully")
         return agent
     

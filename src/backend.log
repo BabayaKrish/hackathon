@@ -1,41 +1,199 @@
-INFO:__main__:Initializing agents...
-/Users/bhavyan/hackathon/venv2/lib/python3.12/site-packages/google/auth/_default.py:108: UserWarning: Your application has authenticated using end user credentials from Google Cloud SDK without a quota project. You might receive a "quota exceeded" or "API not enabled" error. See the following page for troubleshooting: https://cloud.google.com/docs/authentication/adc-troubleshooting/user-creds. 
-  warnings.warn(_CLOUD_SDK_CREDENTIALS_WARNING)
+INFO:     Will watch for changes in these directories: ['/home/devstar7433/hackathon/src']
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     Started reloader process [36760] using StatReload
+2025-12-16 19:14:43.920870: I external/local_xla/xla/tsl/cuda/cudart_stub.cc:32] Could not find cuda drivers on your machine, GPU will not be used.
+2025-12-16 19:14:43.929241: I external/local_xla/xla/tsl/cuda/cudart_stub.cc:32] Could not find cuda drivers on your machine, GPU will not be used.
+2025-12-16 19:14:43.953751: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:467] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1765912483.995365   36763 cuda_dnn.cc:8579] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1765912484.007688   36763 cuda_blas.cc:1407] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+W0000 00:00:1765912484.038426   36763 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1765912484.038523   36763 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1765912484.038533   36763 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1765912484.038538   36763 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+2025-12-16 19:14:44.047592: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+INFO:fastapi-backend:Initializing agents...
 INFO:agents.report_agent:ReportAgent initialized for project ccibt-hack25ww7-743
-INFO:__main__:✅ ReportAgent initialized
-/Users/bhavyan/hackathon/venv2/lib/python3.12/site-packages/google/auth/_default.py:108: UserWarning: Your application has authenticated using end user credentials from Google Cloud SDK without a quota project. You might receive a "quota exceeded" or "API not enabled" error. See the following page for troubleshooting: https://cloud.google.com/docs/authentication/adc-troubleshooting/user-creds. 
-  warnings.warn(_CLOUD_SDK_CREDENTIALS_WARNING)
+INFO:fastapi-backend:✅ ReportAgent initialized
 INFO:agents.plan_agent:PlanAgent initialized for project ccibt-hack25ww7-743
-INFO:__main__:✅ PlanAgent initialized
-/Users/bhavyan/hackathon/venv2/lib/python3.12/site-packages/google/auth/_default.py:108: UserWarning: Your application has authenticated using end user credentials from Google Cloud SDK without a quota project. You might receive a "quota exceeded" or "API not enabled" error. See the following page for troubleshooting: https://cloud.google.com/docs/authentication/adc-troubleshooting/user-creds. 
-  warnings.warn(_CLOUD_SDK_CREDENTIALS_WARNING)
+INFO:fastapi-backend:✅ PlanAgent initialized
 INFO:agents.plan_info_agent:PlanInfoAgent initialized for project ccibt-hack25ww7-743
-INFO:__main__:✅ PlanInfoAgent initialized
-/Users/bhavyan/hackathon/venv2/lib/python3.12/site-packages/google/auth/_default.py:108: UserWarning: Your application has authenticated using end user credentials from Google Cloud SDK without a quota project. You might receive a "quota exceeded" or "API not enabled" error. See the following page for troubleshooting: https://cloud.google.com/docs/authentication/adc-troubleshooting/user-creds. 
-  warnings.warn(_CLOUD_SDK_CREDENTIALS_WARNING)
+INFO:fastapi-backend:✅ PlanInfoAgent initialized
 INFO:agents.balance_agent:BalanceAgent initialized for project ccibt-hack25ww7-743
-INFO:__main__:✅ BalanceAgent initialized
-/Users/bhavyan/hackathon/src/fastapi-backend.py:710: DeprecationWarning: 
-        on_event is deprecated, use lifespan event handlers instead.
-
-        Read more about it in the
-        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-        
-  @app.on_event("startup")
-/Users/bhavyan/hackathon/src/fastapi-backend.py:727: DeprecationWarning: 
-        on_event is deprecated, use lifespan event handlers instead.
-
-        Read more about it in the
-        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-        
-  @app.on_event("shutdown")
-
-============================================================
-🚀 Starting FastAPI Server
-============================================================
-📍 Local: http://localhost:8080
-📚 Docs: http://localhost:8080/docs
-🔍 ReDoc: http://localhost:8080/redoc
-============================================================
-
-WARNING:  You must pass the application as an import string to enable 'reload' or 'workers'.
+INFO:fastapi-backend:✅ BalanceAgent initialized
+INFO:agents.root_agent:Creating Root Agent for project: ccibt-hack25ww7-743
+INFO:agents.root_agent:RootAgent initialized for project ccibt-hack25ww7-743
+INFO:agents.root_agent:✅ Root Agent created successfully
+INFO:fastapi-backend:✅ RootAgent initialized
+INFO:     Started server process [36763]
+INFO:     Waiting for application startup.
+INFO:fastapi-backend:============================================================
+INFO:fastapi-backend:🚀 Client Data Access Agent Starting
+INFO:fastapi-backend:============================================================
+INFO:fastapi-backend:Project ID: ccibt-hack25ww7-743
+INFO:fastapi-backend:Region: us-central1
+INFO:fastapi-backend:
+INFO:fastapi-backend:✅ ReportAgent - Ready
+INFO:fastapi-backend:✅ PlanAgent - Ready
+INFO:fastapi-backend:✅ PlanInfoAgent - Ready
+INFO:fastapi-backend:✅ BalanceAgent - Ready
+INFO:fastapi-backend:
+INFO:fastapi-backend:📚 Documentation: http://localhost:8080/docs
+INFO:fastapi-backend:============================================================
+INFO:     Application startup complete.
+INFO:fastapi-backend:→ POST /balance
+INFO:fastapi-backend:Retrieving balance for user silver_001
+INFO:agents.balance_agent:Processing balance request for user silver_001
+INFO:agents.balance_agent:Retrieving current balance for user silver_001
+INFO:agents.balance_agent:Retrieving recent transactions for user silver_001
+INFO:agents.balance_agent:Analyzing balance trends for user silver_001
+INFO:fastapi-backend:← POST /balance 200 (3548.13ms)
+INFO:     127.0.0.1:33140 - "POST /balance HTTP/1.1" 200 OK
+INFO:fastapi-backend:→ POST /balance
+INFO:fastapi-backend:Retrieving balance for user silver_001
+INFO:agents.balance_agent:Processing balance request for user silver_001
+INFO:agents.balance_agent:Retrieving current balance for user silver_001
+INFO:agents.balance_agent:Retrieving recent transactions for user silver_001
+INFO:agents.balance_agent:Analyzing balance trends for user silver_001
+INFO:fastapi-backend:← POST /balance 200 (2575.81ms)
+INFO:     127.0.0.1:40664 - "POST /balance HTTP/1.1" 200 OK
+INFO:fastapi-backend:→ POST /balance
+INFO:fastapi-backend:Retrieving balance for user silver_001
+INFO:agents.balance_agent:Processing balance request for user silver_001
+INFO:agents.balance_agent:Retrieving current balance for user silver_001
+INFO:agents.balance_agent:Retrieving recent transactions for user silver_001
+INFO:agents.balance_agent:Analyzing balance trends for user silver_001
+INFO:fastapi-backend:← POST /balance 200 (2526.25ms)
+INFO:     127.0.0.1:50426 - "POST /balance HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:fastapi-backend:Shutting down Client Data Access Agent...
+INFO:     Application shutdown complete.
+INFO:     Finished server process [36763]
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+2025-12-16 19:17:54.636007: I external/local_xla/xla/tsl/cuda/cudart_stub.cc:32] Could not find cuda drivers on your machine, GPU will not be used.
+2025-12-16 19:17:54.646330: I external/local_xla/xla/tsl/cuda/cudart_stub.cc:32] Could not find cuda drivers on your machine, GPU will not be used.
+2025-12-16 19:17:54.672210: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:467] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1765912674.716237   37674 cuda_dnn.cc:8579] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1765912674.729523   37674 cuda_blas.cc:1407] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+W0000 00:00:1765912674.761855   37674 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1765912674.762030   37674 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1765912674.762097   37674 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1765912674.762158   37674 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+2025-12-16 19:17:54.770172: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+INFO:fastapi-backend:Initializing agents...
+INFO:agents.report_agent:ReportAgent initialized for project ccibt-hack25ww7-743
+INFO:fastapi-backend:✅ ReportAgent initialized
+INFO:agents.plan_agent:PlanAgent initialized for project ccibt-hack25ww7-743
+INFO:fastapi-backend:✅ PlanAgent initialized
+INFO:agents.plan_info_agent:PlanInfoAgent initialized for project ccibt-hack25ww7-743
+INFO:fastapi-backend:✅ PlanInfoAgent initialized
+INFO:agents.balance_agent:BalanceAgent initialized for project ccibt-hack25ww7-743
+INFO:fastapi-backend:✅ BalanceAgent initialized
+INFO:agents.root_agent:Creating Root Agent for project: ccibt-hack25ww7-743
+INFO:agents.root_agent:RootAgent initialized for project ccibt-hack25ww7-743
+INFO:agents.root_agent:✅ Root Agent created successfully
+INFO:fastapi-backend:✅ RootAgent initialized
+INFO:     Started server process [37674]
+INFO:     Waiting for application startup.
+INFO:fastapi-backend:============================================================
+INFO:fastapi-backend:🚀 Client Data Access Agent Starting
+INFO:fastapi-backend:============================================================
+INFO:fastapi-backend:Project ID: ccibt-hack25ww7-743
+INFO:fastapi-backend:Region: us-central1
+INFO:fastapi-backend:
+INFO:fastapi-backend:✅ ReportAgent - Ready
+INFO:fastapi-backend:✅ PlanAgent - Ready
+INFO:fastapi-backend:✅ PlanInfoAgent - Ready
+INFO:fastapi-backend:✅ BalanceAgent - Ready
+INFO:fastapi-backend:
+INFO:fastapi-backend:📚 Documentation: http://localhost:8080/docs
+INFO:fastapi-backend:============================================================
+INFO:     Application startup complete.
+INFO:fastapi-backend:→ POST /balance
+INFO:fastapi-backend:Retrieving balance for user silver_001
+INFO:agents.balance_agent:Processing balance request for user silver_001
+INFO:agents.balance_agent:Retrieving current balance for user silver_001
+INFO:agents.balance_agent:Retrieving recent transactions for user silver_001
+INFO:agents.balance_agent:Analyzing balance trends for user silver_001
+ERROR:agents.balance_agent:Balance request processing error: type object 'datetime.datetime' has no attribute 'UTC'
+INFO:fastapi-backend:← POST /balance 200 (2696.89ms)
+INFO:     127.0.0.1:44984 - "POST /balance HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:fastapi-backend:Shutting down Client Data Access Agent...
+INFO:     Application shutdown complete.
+INFO:     Finished server process [37674]
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+WARNING:  StatReload detected changes in 'agents/balance_agent.py'. Reloading...
+2025-12-16 19:18:44.264973: I external/local_xla/xla/tsl/cuda/cudart_stub.cc:32] Could not find cuda drivers on your machine, GPU will not be used.
+2025-12-16 19:18:44.275436: I external/local_xla/xla/tsl/cuda/cudart_stub.cc:32] Could not find cuda drivers on your machine, GPU will not be used.
+2025-12-16 19:18:44.300643: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:467] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1765912724.342810   37915 cuda_dnn.cc:8579] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1765912724.355474   37915 cuda_blas.cc:1407] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+W0000 00:00:1765912724.388123   37915 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1765912724.388318   37915 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1765912724.388333   37915 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1765912724.388340   37915 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+2025-12-16 19:18:44.397362: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+INFO:fastapi-backend:Initializing agents...
+INFO:agents.report_agent:ReportAgent initialized for project ccibt-hack25ww7-743
+INFO:fastapi-backend:✅ ReportAgent initialized
+INFO:agents.plan_agent:PlanAgent initialized for project ccibt-hack25ww7-743
+INFO:fastapi-backend:✅ PlanAgent initialized
+INFO:agents.plan_info_agent:PlanInfoAgent initialized for project ccibt-hack25ww7-743
+INFO:fastapi-backend:✅ PlanInfoAgent initialized
+INFO:agents.balance_agent:BalanceAgent initialized for project ccibt-hack25ww7-743
+INFO:fastapi-backend:✅ BalanceAgent initialized
+INFO:agents.root_agent:Creating Root Agent for project: ccibt-hack25ww7-743
+INFO:agents.root_agent:RootAgent initialized for project ccibt-hack25ww7-743
+INFO:agents.root_agent:✅ Root Agent created successfully
+INFO:fastapi-backend:✅ RootAgent initialized
+INFO:     Started server process [37915]
+INFO:     Waiting for application startup.
+INFO:fastapi-backend:============================================================
+INFO:fastapi-backend:🚀 Client Data Access Agent Starting
+INFO:fastapi-backend:============================================================
+INFO:fastapi-backend:Project ID: ccibt-hack25ww7-743
+INFO:fastapi-backend:Region: us-central1
+INFO:fastapi-backend:
+INFO:fastapi-backend:✅ ReportAgent - Ready
+INFO:fastapi-backend:✅ PlanAgent - Ready
+INFO:fastapi-backend:✅ PlanInfoAgent - Ready
+INFO:fastapi-backend:✅ BalanceAgent - Ready
+INFO:fastapi-backend:
+INFO:fastapi-backend:📚 Documentation: http://localhost:8080/docs
+INFO:fastapi-backend:============================================================
+INFO:     Application startup complete.
+INFO:fastapi-backend:→ POST /balance
+INFO:fastapi-backend:Retrieving balance for user silver_001
+INFO:agents.balance_agent:Processing balance request for user silver_001
+INFO:agents.balance_agent:Retrieving current balance for user silver_001
+INFO:agents.balance_agent:Retrieving recent transactions for user silver_001
+INFO:agents.balance_agent:Analyzing balance trends for user silver_001
+INFO:fastapi-backend:← POST /balance 200 (2203.38ms)
+INFO:     127.0.0.1:51036 - "POST /balance HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:fastapi-backend:Shutting down Client Data Access Agent...
+INFO:     Application shutdown complete.
+INFO:     Finished server process [37915]
+INFO:     Stopping reloader process [36760]
