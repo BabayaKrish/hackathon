@@ -114,8 +114,14 @@ user_input = st.chat_input(
     key="chat_input"
 )
 
+
 # Process chat input (still outside tabs)
-if user_input:
+if "last_processed_input" not in st.session_state:
+    st.session_state.last_processed_input = ""
+
+if user_input and user_input != st.session_state.last_processed_input:
+    # ... process input ...
+    st.session_state.last_processed_input = user_input
     # Add user message to history
     st.session_state.chat_history.append({
         "role": "user",
@@ -165,19 +171,34 @@ if user_input:
 
 For more detailed reports, visit the reports section.
 """
-                
                 elif agent_used == "plan_info_agent":
-                    plans = data.get("plans", [])
-                    assistant_response = f"""
-**📊 Plan Information**
-
-{json.dumps(plans, indent=2)}
-
-Visit the **Plan Comparison** tab to see a detailed comparison and upgrade.
-"""
-                
-                else:
-                    assistant_response = str(data)
+                    formatted_response = result.get("formatted_response", "").strip()
+                    logger.info(f"[streamlit] Formatted response from backend: {formatted_response}")
+                    if formatted_response:
+                        # Backend provided formatted response
+                        assistant_response = formatted_response
+                    else:
+                        # Fallback: format plans locally
+                        plans = data.get("plans", [])
+                        if plans:
+                            assistant_response = "📋 **Plan Information**\n\n"
+                            for plan in plans:
+                                name = plan.get("plan_name", "Unknown")
+                                monthly = plan.get("monthly_price", 0)
+                                annual = plan.get("annual_price", 0)
+                                features = plan.get("features", "")
+                                
+                                assistant_response += f"### {name}\n"
+                                assistant_response += f"**💰 Pricing:**\n"
+                                assistant_response += f"• Monthly: ${monthly:.2f}\n"
+                                assistant_response += f"• Annual: ${annual:.2f}\n"
+                                if features:
+                                    assistant_response += f"\n**✨ Features:**\n"
+                                    for feat in [f.strip() for f in features.split(",")]:
+                                        assistant_response += f"• {feat}\n"
+                                assistant_response += "\n"
+                        else:
+                            assistant_response = "No plans available."
                 
                 st.session_state.chat_history.append({"role": "assistant", "content": assistant_response})
                 

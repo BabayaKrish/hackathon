@@ -16,10 +16,6 @@ import sys
 import os
 from agents.plan_info_agent import PlanInfoAgent
 
-# Add parent directory to path for imports
-# sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'common_tools'))
-# sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'common_tools'))
-
 from google.cloud import bigquery
 from google.api_core.exceptions import GoogleAPIError as GoogleCloudError
 from vertexai.generative_models import GenerativeModel, Tool
@@ -156,7 +152,7 @@ class RootAgent:
         self.plan_info_agent = plan_info_agent  # <-- add this line
         logger.info(f"RootAgent initialized for project {project_id}")
     # ==================== Audit Logging Helper ====================
-    
+
     async def _audit_log(
         self,
         agent_name: str,
@@ -170,7 +166,7 @@ class RootAgent:
     ):
         """
         Log event to audit trail using AuditTool.
-        
+
         Args:
             agent_name: Name of the agent performing the action
             caller: Caller context (user_id or function name)
@@ -184,7 +180,7 @@ class RootAgent:
         if async_log_event is None:
             logger.debug("AuditTool not available, skipping audit logging")
             return
-        
+
         try:
             result = await async_log_event(
                 agent_name=agent_name,
@@ -200,7 +196,7 @@ class RootAgent:
             logger.info(f"Audit logged: {result}")
         except Exception as e:
             logger.error(f"Failed to log audit event: {str(e)}")
-    
+
     # ==================== Tool Definitions ====================
     
     @adk_tool
@@ -216,29 +212,32 @@ class RootAgent:
         """
         
         logger.info(f"Classifying intent for query: {query}")
-        
+
         start_time = time.time()
-        
+
         # Define valid intents to match our enum
-        valid_intents = ["REPORT_REQUEST", "PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK"]
-        
+        REPORT_TYPES = ["balance_report", "wire_details", "intraday_balance", "running_ledger"]
+        valid_intents = REPORT_TYPES + ["PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK"]
         prompt = f"""You are a financial services intent classifier. Analyze the following customer query and determine their intent.
 
-    Query: {query}
+Query: {query}
 
-    Available intents:
-    1. REPORT_REQUEST - User wants to view or download a report (wire reports, balance reports, transaction history)
-    2. PLAN_UPGRADE - User wants to change or upgrade their plan to a higher tier
-    3. PLAN_INFO - User is asking for information about plans, features, pricing, or comparisons
-    4. BALANCE_CHECK - User wants to know their current account balance or recent transactions
+Available intents:
+1. balance_report - User wants to view or download a balance report
+2. wire_details - User wants to view or download wire transfer details
+3. intraday_balance - User wants to view real-time balance
+4. running_ledger - User wants to view the complete transaction log
+5. PLAN_UPGRADE - User wants to change or upgrade their plan to a higher tier
+6. PLAN_INFO - User is asking for information about plans, features, pricing, or comparisons
+7. BALANCE_CHECK - User wants to know their current account balance or recent transactions
 
-    Respond ONLY in valid JSON format with no additional text:
-    {{"intent": "REPORT_REQUEST|PLAN_UPGRADE|PLAN_INFO|BALANCE_CHECK", "confidence": 0.0-1.0, "reasoning": "Brief explanation"}}
+Respond ONLY in valid JSON format with no additional text:
+{{"intent": "balance_report|wire_details|intraday_balance|running_ledger|PLAN_UPGRADE|PLAN_INFO|BALANCE_CHECK", "confidence": 0.0-1.0, "reasoning": "Brief explanation"}}
 
-    Rules:
-    - Confidence must be between 0 and 1
-    - If unclear or ambiguous, set confidence to 0.6-0.8
-    - Return valid JSON only, no markdown or explanations"""
+Rules:
+- Confidence must be between 0 and 1
+- If unclear or ambiguous, set confidence to 0.6-0.8
+- Return valid JSON only, no markdown or explanations"""
         
         max_retries = 3
         base_delay = 1.0  # seconds
@@ -409,7 +408,7 @@ class RootAgent:
         logger.info(f"Checking compliance for user {user_id} intent {intent}")
         
         start_time = time.time()
-        
+
         try:
             # Query user profile and plan tier
             query = f"""
@@ -447,7 +446,7 @@ class RootAgent:
                     error_message="User not found"
                 )
                 return error_output
-            
+
             user_data = results[0]
             plan_tier = user_data.plan_tier
             kyc_verified = user_data.kyc_verified
@@ -456,11 +455,13 @@ class RootAgent:
             if isinstance(kyc_verified, str):
                 kyc_verified = kyc_verified.lower() in ('true', '1', 'yes')
             
+            logger.info(f"User {user_id} has plan tier {plan_tier}, KYC verified: {kyc_verified}")
             # Define access matrix (simplified - no need for complex JOIN)
+            REPORT_TYPES = ["balance_report", "wire_details", "intraday_balance", "running_ledger"]
             access_matrix = {
-                "gold": ["REPORT_REQUEST", "PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK"],
-                "silver": ["REPORT_REQUEST", "PLAN_INFO", "BALANCE_CHECK"],
-                "bronze": ["BALANCE_CHECK", "PLAN_INFO"]
+                "gold": REPORT_TYPES + ["PLAN_UPGRADE", "PLAN_INFO", "BALANCE_CHECK"],
+                "silver": ["balance_report", "intraday_balance", "running_ledger", "PLAN_INFO", "BALANCE_CHECK"],
+                "bronze": ["balance_report", "intraday_balance", "BALANCE_CHECK", "PLAN_INFO"]
             }
             
             allowed_intents = access_matrix.get(plan_tier.lower() if plan_tier else "", [])
@@ -481,12 +482,12 @@ class RootAgent:
                 output = json.dumps({
                     "status": "success",
                     "compliance_status": "REQUIRES_MFA",
-                    "reason": "KYC verification required for wire reports",
+                    "reason": f"KYC verification required for {intent}",
                     "requires_verification": True,
                     "allowed_features": allowed_intents
                 })
                 latency_ms = int((time.time() - start_time) * 1000)
-                self._audit_log(
+                await self._audit_log(
                     agent_name="check_compliance",
                     caller=user_id,
                     input_text=f"intent:{intent}",
@@ -496,12 +497,12 @@ class RootAgent:
                     metadata={"plan_tier": plan_tier, "kyc_verified": kyc_verified}
                 )
                 return output
-            
+
             if not intent_allowed:
                 output = json.dumps({
                     "status": "success",
                     "compliance_status": "DENIED",
-                    "reason": f"Your {plan_tier} plan doesn't include {intent}",
+                    "reason": f"Your {plan_tier} plan doesn't include {intent}. Allowed report types: {', '.join(REPORT_TYPES)}",
                     "requires_verification": False,
                     "allowed_features": allowed_intents
                 })
@@ -516,7 +517,7 @@ class RootAgent:
                     metadata={"plan_tier": plan_tier, "intent": intent}
                 )
                 return output
-            
+
             output = json.dumps({
                 "status": "success",
                 "compliance_status": "ALLOWED",
@@ -534,7 +535,7 @@ class RootAgent:
                 metadata={"plan_tier": plan_tier, "intent": intent}
             )
             return output
-        
+
         except GoogleCloudError as e:
             logger.error(f"BigQuery error: {str(e)}")
             error_output = json.dumps({
@@ -553,7 +554,7 @@ class RootAgent:
                 error_message=str(e)
             )
             return error_output
-    
+
     @adk_tool
     async def route_to_agent(self, intent: str, user_id: str) -> str:
         """
@@ -576,7 +577,7 @@ class RootAgent:
         logger.info(f"Routing {intent} to sub-agent")
         
         start_time = time.time()
-        
+
         agent_map = {
             "REPORT_REQUEST": "report_agent",
             "PLAN_UPGRADE": "plan_agent",
@@ -585,7 +586,18 @@ class RootAgent:
         }
         
         target_agent = agent_map.get(intent, "general_agent")
-        
+        REPORT_TYPES = ["balance_report", "wire_details", "intraday_balance", "running_ledger"]
+
+        if intent in REPORT_TYPES:
+            target_agent = "report_agent"
+        else:
+            agent_map = {
+                "PLAN_UPGRADE": "plan_agent",
+                "PLAN_INFO": "plan_info_agent",
+                "BALANCE_CHECK": "balance_agent",
+            }
+            target_agent = agent_map.get(intent, "general_agent")
+
         output = json.dumps({
             "status": "success",
             "target_agent": target_agent,
@@ -597,7 +609,7 @@ class RootAgent:
                 "agent_service_url": f"http://localhost:8000/{target_agent}"
             }
         })
-        
+
         latency_ms = int((time.time() - start_time) * 1000)
         await self._audit_log(
             agent_name="route_to_agent",
@@ -608,9 +620,9 @@ class RootAgent:
             safety_result="allowed",
             metadata={"target_agent": target_agent, "intent": intent}
         )
-        
+
         return output
-    
+
     @adk_tool
     async def execute_sub_agent(
         self,
@@ -638,12 +650,15 @@ class RootAgent:
             - balance_agent: Queries account balance and transactions
         """
         logger.info(f"Executing sub-agent: {target_agent}")
-        
+        REPORT_TYPES = ["balance_report", "wire_details", "intraday_balance", "running_ledger"]
+
         start_time = time.time()
         
         try:
             if target_agent == "report_agent":
-                data = self._execute_report_agent(user_id, query)
+                agent = ReportAgent('ccibt-hack25ww7-743', 'us-central1')  # ✅ Instantiate agent
+                result = await agent.process_report_request(user_id, intent) # ✅ Delegate
+                data = result
             elif target_agent == "plan_agent":
                 data = self._execute_plan_agent(user_id, query)
             elif target_agent == "plan_info_agent":
@@ -661,7 +676,7 @@ class RootAgent:
                 "data": data,
                 "execution_time_ms": elapsed_ms
             })
-            
+
             # Audit the sub-agent execution
             await self._audit_log(
                 agent_name=target_agent,
@@ -672,7 +687,7 @@ class RootAgent:
                 safety_result="allowed",
                 metadata={"intent": intent, "query": query}
             )
-            
+
             return output
         except Exception as e:
             logger.error(f"Sub-agent execution error: {str(e)}")
@@ -681,7 +696,7 @@ class RootAgent:
                 "agent": target_agent,
                 "error": str(e)
             })
-            
+
             elapsed_ms = int((time.time() - start_time) * 1000)
             self._audit_log(
                 agent_name=target_agent,
@@ -693,9 +708,9 @@ class RootAgent:
                 error_message=str(e),
                 metadata={"intent": intent}
             )
-            
+
             return error_output
-    
+
     @adk_tool
     async def aggregate_results(
         self,
@@ -723,7 +738,7 @@ class RootAgent:
         logger.info("Aggregating sub-agent results")
         
         start_time = time.time()
-        
+
         try:
             # Determine next actions
             next_actions_map = {
@@ -741,15 +756,19 @@ class RootAgent:
             except:
                 agent_data = {"raw_data": sub_agent_data}
             
+                # ✅ FORMAT DATA BASED ON INTENT
+            formatted_data = self._format_agent_response(intent, agent_data)
+
             output = json.dumps({
                 "status": "success",
                 "intent": intent,
                 "confidence": confidence,
                 "data": agent_data,
+                "formatted_response": formatted_data,  # ← Add human-readable version
                 "next_actions": next_actions,
-                "reasoning": f"Processed {intent} with {confidence:.0%} confidence"
+                "reasoning": self._get_intent_reasoning(intent, agent_data)
             })
-            
+
             # Audit the aggregation
             latency_ms = int((time.time() - start_time) * 1000)
             await self._audit_log(
@@ -761,7 +780,7 @@ class RootAgent:
                 safety_result="allowed",
                 metadata={"intent": intent, "confidence": confidence, "next_actions": next_actions}
             )
-            
+
             return output
         except Exception as e:
             logger.error(f"Aggregation error: {str(e)}")
@@ -769,7 +788,7 @@ class RootAgent:
                 "status": "error",
                 "error": str(e)
             })
-            
+
             latency_ms = int((time.time() - start_time) * 1000)
             await self._audit_log(
                 agent_name="aggregate_results",
@@ -780,9 +799,127 @@ class RootAgent:
                 safety_result="error",
                 error_message=str(e)
             )
-            
+
             return error_output
-    
+
+
+    def _format_agent_response(self, intent: str, agent_data: Dict) -> str:
+        """Format agent response for user display"""
+
+        if intent == "PLAN_INFO":
+            return self._format_plan_info(agent_data)
+        elif intent == "BALANCECHECK":
+            return self._format_balance_info(agent_data)
+        elif intent == "REPORTREQUEST":
+            return self._format_report_info(agent_data)
+        elif intent == "PLANUPGRADE":
+            return self._format_upgrade_info(agent_data)
+        else:
+            return str(agent_data)
+
+    def _format_plan_info(self, data: Dict) -> str:
+        """Format plan information for display"""
+
+        if not data or "plans" not in data:
+            return "No plan information available."
+
+        plans = data.get("plans", [])
+        if not plans:
+            return "No plans found."
+
+        formatted = "📋 **Available Plans**\n\n"
+
+        for plan in plans:
+            plan_name = plan.get("plan_name", "Unknown Plan")
+            tier = plan.get("tier", "")
+            monthly = plan.get("monthly_price", 0)
+            annual = plan.get("annual_price", 0)
+            features = plan.get("features", "")
+
+            formatted += f"### {plan_name} ({tier.upper()})\n"
+            formatted += f"**Pricing:**\n"
+            formatted += f"- Monthly: ${monthly:.2f}/month\n"
+            formatted += f"- Annual: ${annual:.2f}/year\n"
+
+            if features:
+                formatted += f"**Features:**\n"
+                feature_list = [f.strip() for f in features.split(",")]
+                for feature in feature_list:
+                    formatted += f"- {feature}\n"
+
+            formatted += "\n"
+
+        return formatted
+
+
+    def _format_balance_info(self, data: Dict) -> str:
+        """Format balance information for display"""
+
+        balance = data.get("balance", 0)
+        currency = data.get("currency", "USD")
+        transaction_count = data.get("transaction_count", 0)
+        last_transaction = data.get("last_transaction", "Never")
+
+        return f"""💰 **Account Balance**
+
+**Current Balance:** {currency} {balance:,.2f}
+**Recent Transactions:** {transaction_count} in last 90 days
+**Last Transaction:** {last_transaction}
+"""
+
+
+    def _format_report_info(self, data: Dict) -> str:
+        """Format report information for display"""
+
+        reports = data.get("reports", [])
+        if not reports:
+            return "No reports available."
+
+        formatted = f"📊 **Available Reports** ({len(reports)} found)\n\n"
+
+        for report in reports:
+            report_id = report.get("report_id", "N/A")
+            amount = report.get("wire_amount", 0)
+            destination = report.get("destination_bank", "N/A")
+            status = report.get("status", "pending")
+            date = report.get("report_date", "N/A")
+
+            formatted += f"**Report #{report_id}** - {status.upper()}\n"
+            formatted += f"- Amount: ${amount:,.2f}\n"
+            formatted += f"- Destination: {destination}\n"
+            formatted += f"- Date: {date}\n\n"
+
+        return formatted
+
+
+    def _format_upgrade_info(self, data: Dict) -> str:
+        """Format upgrade information for display"""
+
+        action = data.get("action", "upgrade_requested")
+        current_plan = data.get("current_plan", "Unknown")
+        new_plan = data.get("new_plan", "Unknown")
+        message = data.get("message", "Processing your request...")
+
+        return f"""🚀 **Plan Upgrade**
+
+    **Current Plan:** {current_plan.upper()}
+    **Upgrade To:** {new_plan.upper()}
+    **Status:** {message}
+    **Next Step:** {data.get("next_step", "Contact support")}
+    """
+
+
+    def _get_intent_reasoning(self, intent: str, data: Dict) -> str:
+        """Generate reasoning based on intent and data"""
+
+        reasoning_map = {
+            "PLAN_INFO": f"Retrieved {len(data.get('plans', []))} available plans",
+            "BALANCECHECK": f"Current account balance is {data.get('currency', 'USD')} {data.get('balance', 0):,.2f}",
+            "REPORTREQUEST": f"Found {len(data.get('reports', []))} available reports",
+            "PLANUPGRADE": f"Upgrade from {data.get('current_plan', 'current')} to {data.get('new_plan', 'selected')} plan",
+        }
+
+        return reasoning_map.get(intent, "Request processed successfully")
     # ==================== Sub-Agent Execution Methods ====================
     
     def _execute_report_agent(self, user_id: str, query: str) -> Dict[str, Any]:
@@ -845,7 +982,7 @@ class RootAgent:
     # def _execute_plan_info_agent(self, query: str) -> Dict[str, Any]:
     #     """Execute plan info agent: return plan details"""
     #     bq_query = f"""
-    #     SELECT 
+    #     SELECT
     #         plan_name,
     #         tier,
     #         monthly_price,
@@ -854,24 +991,7 @@ class RootAgent:
     #     FROM `{self.project_id}.client_data.plan_offerings`
     #     ORDER BY monthly_price DESC
     #     """
-        
-    #     try:
-    #         results = self.bq_client.query(bq_query).result()
-    #         plans = []
-    #         for row in results:
-    #             plan_dict = dict(row)
-    #             # Convert Decimal objects to floats for JSON serialization
-    #             if 'monthly_price' in plan_dict and hasattr(plan_dict['monthly_price'], '__float__'):
-    #                 plan_dict['monthly_price'] = float(plan_dict['monthly_price'])
-    #             if 'annual_price' in plan_dict and hasattr(plan_dict['annual_price'], '__float__'):
-    #                 plan_dict['annual_price'] = float(plan_dict['annual_price'])
-    #             plans.append(plan_dict)
-            
-    #         return {"plans": plans, "message": "All available plans retrieved"}
-    #     except Exception as e:
-    #         logger.error(f"Plan info agent error: {str(e)}")
-    #         return {"error": str(e), "plans": []}
-    
+
     def _execute_balance_agent(self, user_id: str) -> Dict[str, Any]:
         """Execute balance agent: fetch account balance and transactions"""
         bq_query = f"""
@@ -928,7 +1048,7 @@ class RootAgent:
         
         execution_log = []
         overall_start_time = time.time()
-        
+
         try:
             # Step 1: Classify Intent
             step_start = time.time()
@@ -971,7 +1091,7 @@ class RootAgent:
                     "error": compliance_result.get("reason", "Compliance check failed"),
                     "execution_log": execution_log
                 }
-                
+
                 # Audit the compliance failure
                 total_latency_ms = int((time.time() - overall_start_time) * 1000)
                 await self._audit_log(
@@ -984,9 +1104,9 @@ class RootAgent:
                     error_message=compliance_result.get("reason", "Compliance check failed"),
                     metadata={"intent": intent, "compliance_status": compliance_status}
                 )
-                
+
                 return error_result
-            
+
             # Step 3: Route to Agent
             step_start = time.time()
             routing_result_str = await self.route_to_agent(intent, user_id)
@@ -1003,6 +1123,8 @@ class RootAgent:
             
             # Step 4: Execute Sub-Agent
             step_start = time.time()
+            logger.info(f"Executing sub-agent: {target_agent}")
+            logger.info(f"Parameters for logging: user_id={user_id}, query={query}, intent={intent}")
             exec_result_str = await self.execute_sub_agent(target_agent, user_id, query, intent)
             exec_result = json.loads(exec_result_str)
             sub_agent_data = exec_result.get("data", {})
@@ -1055,7 +1177,7 @@ class RootAgent:
                 "execution_log": execution_log,
                 "error": None
             }
-            
+
             # Audit the final successful response
             total_latency_ms = int((time.time() - overall_start_time) * 1000)
             await self._audit_log(
@@ -1072,9 +1194,9 @@ class RootAgent:
                     "compliance_passed": True
                 }
             )
-            
+
             return final_response
-        
+
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
 
@@ -1097,7 +1219,7 @@ class RootAgent:
                 "error": str(e),
                 "execution_log": execution_log
             }
-            
+
             # Audit the error response
             total_latency_ms = int((time.time() - overall_start_time) * 1000)
             await self._audit_log(
@@ -1109,7 +1231,7 @@ class RootAgent:
                 safety_result="error",
                 error_message=str(e)
             )
-            
+
             return error_result
 
 
@@ -1158,6 +1280,8 @@ def create_root_agent(project_id: str, region: str = "us-central1") -> RootAgent
     except Exception as e:
         logger.error(f"Failed to create Root Agent: {str(e)}", exc_info=True)
         raise
+
+
 # ==================== EXPORTS ====================
 
 __all__ = [

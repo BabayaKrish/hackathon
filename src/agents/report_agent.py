@@ -110,7 +110,7 @@ class ReportAgent:
         if async_log_event is None:
             logger.debug("AuditTool not available, skipping audit logging")
             return
-        
+
         try:
             result = await async_log_event(
                 agent_name=agent_name,
@@ -126,7 +126,7 @@ class ReportAgent:
             logger.info(f"Audit logged: {result}")
         except Exception as e:
             logger.error(f"Failed to log audit event: {str(e)}")
-    
+
     async def query_bigquery(self, user_id: str, report_type: str) -> Dict[str, Any]:
         """
         TOOL 1: Execute BigQuery queries to fetch raw financial data
@@ -161,7 +161,7 @@ class ReportAgent:
             """,
             "wire_details": f"""
                 SELECT 
-                    wire_id,
+                    report_id,
                     user_id,
                     wire_amount,
                     destination_bank,
@@ -245,7 +245,25 @@ class ReportAgent:
             }
             await self._audit_log("report_agent.query_bigquery", user_id, input_text, json.dumps(error_output), latency_ms, safety_result="error", error_message=str(e), metadata={"user_id": user_id, "report_type": report_type})
             return error_output
-    
+
+    def aggregate_wire_report_by_status(self, raw_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Aggregate wire reports by status for visualization"""
+        status_aggregates = {}
+        status_amounts = {}
+
+        for record in raw_data:
+            status = record.get('status', 'unknown').lower()
+            amount = float(record.get('wire_amount', 0))
+            status_aggregates[status] = status_aggregates.get(status, 0) + 1
+            status_amounts[status] = status_amounts.get(status, 0) + amount
+
+        return {
+            "status_counts": status_aggregates,
+            "status_amounts": status_amounts,
+            "total_reports": len(raw_data),
+            "total_amount": sum(status_amounts.values())
+        }
+
     async def get_report_template(self, report_type: str) -> Dict[str, Any]:
         """
         TOOL 2: Retrieve report schema/template structure
@@ -280,7 +298,7 @@ class ReportAgent:
                 "title": "Wire Transfer Details",
                 "description": "Complete wire transfer history with status tracking",
                 "columns": [
-                    "wire_id", "wire_amount", "destination_bank",
+                    "report_id", "wire_amount", "destination_bank",
                     "destination_account", "status", "wire_date",
                     "reference_number", "beneficiary_name"
                 ],
@@ -340,8 +358,30 @@ class ReportAgent:
         caller = "system"
 
         try:
+            # Convert Decimal to float for all records
+            def convert_decimals(obj):
+                if isinstance(obj, list):
+                    return [convert_decimals(item) for item in obj]
+                elif isinstance(obj, dict):
+                    return {k: convert_decimals(v) for k, v in obj.items()}
+                elif hasattr(obj, '__decimal__') or str(type(obj)).endswith("'decimal.Decimal'>"):
+                    return float(obj)
+                elif str(type(obj)).endswith("'Decimal'>"):
+                    return float(obj)
+                elif type(obj).__name__ == 'Decimal':
+                    return float(obj)
+                else:
+                    try:
+                        import decimal
+                        if isinstance(obj, decimal.Decimal):
+                            return float(obj)
+                    except Exception:
+                        pass
+                    return obj
+
             if format_type == "json":
-                formatted_data = json.dumps(raw_data, indent=2)
+                safe_data = convert_decimals(raw_data)
+                formatted_data = json.dumps(safe_data, indent=2)
                 file_extension = "json"
             elif format_type == "csv":
                 # Simple CSV conversion
@@ -388,7 +428,7 @@ class ReportAgent:
             }
             await self._audit_log("report_agent.format_data", caller, input_text, json.dumps(error_output), latency_ms, safety_result="error", error_message=str(e), metadata={"report_type": report_type, "format_type": format_type})
             return error_output
-    
+
     async def generate_visualization(
         self,
         raw_data: List[Dict[str, Any]],
@@ -437,7 +477,7 @@ class ReportAgent:
             }
             await self._audit_log("report_agent.generate_visualization", caller, input_text, json.dumps(error_output), latency_ms, safety_result="error", error_message=str(e), metadata={"report_type": report_type, "chart_type": chart_type})
             return error_output
-    
+
     async def validate_access(self, user_id: str, report_type: str) -> Dict[str, Any]:
         """
         TOOL 5: Validate user access entitlements
@@ -482,7 +522,7 @@ class ReportAgent:
                 latency_ms = (time.time() - start_time) * 1000
                 await self._audit_log("report_agent.validate_access", user_id, input_text, json.dumps(output), latency_ms, safety_result="denied", error_message="User not found", metadata={"user_id": user_id, "report_type": report_type})
                 return output
-            
+
             user_data = results[0]
             plan_tier = user_data.plan_tier
             kyc_verified = user_data.kyc_verified
@@ -500,7 +540,7 @@ class ReportAgent:
                 latency_ms = (time.time() - start_time) * 1000
                 await self._audit_log("report_agent.validate_access", user_id, input_text, json.dumps(output), latency_ms, safety_result="denied", metadata={"user_id": user_id, "report_type": report_type})
                 return output
-            
+
             # Check plan tier access
             plan_access = {
                 "gold": ["balance_report", "wire_details", "ach_inbound", 
@@ -534,7 +574,7 @@ class ReportAgent:
             }
             await self._audit_log("report_agent.validate_access", user_id, input_text, json.dumps(error_output), latency_ms, safety_result="error", error_message=str(e), metadata={"user_id": user_id, "report_type": report_type})
             return error_output
-    
+
     async def process_report_request(
         self,
         user_id: str,
@@ -576,7 +616,7 @@ class ReportAgent:
                 latency_ms = (time.time() - start_time) * 1000
                 await self._audit_log("report_agent.process_report_request", user_id, input_text, json.dumps(error_output), latency_ms, safety_result="denied", error_message=error_output["error"], metadata={"user_id": user_id, "report_type": report_type})
                 return error_output
-            
+
             # Step 2: Query data
             query_result = await self.query_bigquery(user_id, report_type)
             execution_log.append({
@@ -635,7 +675,7 @@ class ReportAgent:
             logged_output = {k: v for k, v in output.items() if k != "report_data"}
             await self._audit_log("report_agent.process_report_request", user_id, input_text, json.dumps(logged_output), elapsed_time, metadata={"user_id": user_id, "report_type": report_type})
             return output
-        
+
         except Exception as e:
             elapsed_time = (time.time() - start_time) * 1000
             logger.error(f"Report processing error: {str(e)}")
